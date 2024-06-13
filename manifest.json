@@ -1,0 +1,41 @@
+{
+	"name": "wbhi-bids-email",
+	"label": "WBHI BIDSify and Email Gear",
+	"description": "Flywheel gear that wraps the relabel-container and bids-curate gears. Also sends an email update about redcap/wbhi matches.",
+	"version": "0.1.0",
+	"author": "Joe Wexler",
+	"maintainer": "Joe Wexler",
+	"cite": "",
+	"license": "MIT",
+	"url": "",
+	"source": "",
+	"environment": {
+		"FLYWHEEL": "/flywheel/v0",
+		"PWD": "/flywheel/v0",
+		"HOME": "/root",
+		"LANG": "C.UTF-8",
+		"LC_ALL": "C.UTF-8",
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	},
+	"custom": {
+		"gear-builder": {
+			"category": "analysis",
+			"image": "jbwexler/wbhi-bids-email:0.1.0"
+		},
+		"flywheel": {
+			"suite": "WBHI"
+		}
+	},
+	"inputs": {
+		"key": {
+			"base": "api-key"
+		}
+	},
+	"config": {
+		"redcap_api_key": {
+			"description": "REDCap API key",
+			"type": "string"
+		}
+	},
+	"command": "python run.py"
+}
