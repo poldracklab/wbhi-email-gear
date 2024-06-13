@@ -29,6 +29,11 @@
 	"inputs": {
 		"key": {
 			"base": "api-key"
+		},
+		"to_reproin_csv": {
+			"base": "file",
+			"description": "CSV file containing a list of possible SeriesDescription patterns and their reproin mapping.",
+			"optional": false
 		}
 	},
 	"config": {

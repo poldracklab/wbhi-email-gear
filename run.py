@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import csv
 import flywheel_gear_toolkit
 import flywheel
 import logging
@@ -16,7 +17,7 @@ log = logging.getLogger(__name__)
 
 REDCAP_API_URL = "https://redcap.stanford.edu/api/"
 
-def get_acq_df(container):
+def get_acq_df(container) -> pd.DataFrame:
     """Get unique labels for all acquisitions in the container.
 
     This is done using a single Data View which is more efficient than iterating through
@@ -88,6 +89,11 @@ def get_deid_sessions(acq_df: pd.DataFrame) -> list:
         )
     return filt_df['session.id'].tolist()
 
+def import_reproin_csv(deid_project: ProjectOutput) -> dict:
+    with gtk_context.open_input('to_reproin_csv', 'r') as csv_file:
+        csv_reader = csv.reader(csv_file)
+        return {row[0]: row[1] for row in csv_reader}
+
 def main():
     gtk_context.init_logging()
     gtk_context.log_config()
@@ -100,8 +106,8 @@ def main():
     deid_project = client.lookup("joe_test/deid_joe")
     acq_df = get_acq_df(deid_project)
     sessions = get_deid_sessions(acq_df)
-    print(sessions)
-    
+    to_reproin_dict = import_reproin_csv(deid_project)
+    breakpoint()
 
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
