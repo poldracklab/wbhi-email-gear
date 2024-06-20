@@ -5,6 +5,9 @@ import flywheel_gear_toolkit
 import flywheel
 import logging
 import pip
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import pandas as pd
 from redcap import Project
@@ -131,10 +134,10 @@ def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
     return {
         "error": None,
         "site": site,
-        "pi_id": parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
-        "sub_id": parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold(),
         "date": datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW),
         "am_pm": "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm",
+        "pi_id": parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
+        "sub_id": parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold()
     }
 
 def create_just_fw_df() -> pd.DataFrame:
@@ -161,13 +164,84 @@ def create_just_fw_df() -> pd.DataFrame:
     hdr_df = pd.DataFrame(hdr_list)
     hdr_df = hdr_df.drop('error', axis=1)
 
+    return hdr_df.sort_values('date')
+
+def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
+    # Since there's no way to reset a field to '', occassionally rid will be ' ' 
+    # if it's value was deleted. Thus, we need to check for both cases.
+    filter_logic = "[rid] = '' or [rid] = ' '"
+    redcap_data = redcap_project.export_records(filter_logic="[rid] = ''")
+    just_rc_list = []
+    
+    for record in redcap_data:
+        if not record["site"]:
+            log.error("Record number %s is missing 'site'" % record["participant_id"]) 
+            continue
+        mri_pi_field = "mri_pi_" + record["site"]
+        if record[mri_pi_field] != '99':
+            pi_id = record[mri_pi_field].casefold()
+        else:
+            pi_id = record[f"{mri_pi_field}_other"].casefold()
+        record_dict = {
+                "redcap_id": record["participant_id"],
+                "site": record["site"],
+                "date": datetime.strptime(record["mri_date"], DATE_FORMAT_RC),
+                "am_pm": record["mri_ampm"],
+                "pi_id": pi_id,
+                "sub_id": record["mri"].casefold()
+        }
+        just_rc_list.append(record_dict)
+
+    return pd.DataFrame(just_rc_list).sort_values("date")
+
+def send_email(subject, html_content, sender, recipients, password):
+    msg = MIMEMultipart()
+    msg['Subject'] = subject
+    msg['From'] = sender
+    msg['To'] = ', '.join(recipients)
+    msg.attach(MIMEText(html_content, 'html'))
+
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp_server:
+       smtp_server.login(sender, password)
+       smtp_server.sendmail(sender, recipients, msg.as_string())
+
+    log.info("Email sent to {recipients}")
+
+def send_wbhi_email(just_fw_df: pd.DataFrame, just_rc_df: pd.DataFrame, site=None) -> None:
+    if site:
+        just_fw_df = just_fw_df[just_fw_df["site"] == site]
+        just_rc_df = just_rc_df[just_rc_df["site"] == site]
+
+    just_fw_html = just_fw_df.to_html(index=False)
+    just_rc_html = just_rc_df.to_html(index=False)
+
+    html_content = f"""
+        <p>Hello,</p>
+        <p>Here is the weekly summary of unmatched sessions and/or redcap records:</p>
+        <br>
+        <p>Flywheel sessions that didn't match any redcap records:</p>
+        {just_fw_html}
+        <br><br>
+        <p>Redcap records that didn't match any Flywheel sessions:</p>
+        {just_rc_html}
+        <br><br>
+        <p>Best, </p>
+        <p>WBHI Team</p>
+    """
+    send_email(
+        "Weekly WBHI Update",
+        html_content,
+        config["gmail_address"],
+        ["jbwexler@stanford.edu"],
+        config["gmail_password"]
+    )
+
 def main():
     gtk_context.init_logging()
     gtk_context.log_config()
 
     redcap_api_key = config["redcap_api_key"]
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
-    redcap_data = redcap_project.export_records()
     
     #deid_project = client.lookup("wbhi/deid")
     deid_project = client.lookup("joe_test/deid_joe")
@@ -176,10 +250,15 @@ def main():
     deid_session_df = deid_session_df[
         deid_session_df['session.tags'].apply(lambda x: 'email' not in x)
     ]
+
     sessions = get_deid_sessions(deid_file_df)
     to_reproin_dict = import_reproin_csv(deid_project)
     deid_sessions_df = create_session_view_df(deid_project)
     just_fw_df = create_just_fw_df()
+    just_rc_df = create_just_rc_df(redcap_project)
+    send_wbhi_email(just_fw_df, just_rc_df)
+    for site in SITE_LIST:
+        send_wbhi_email(just_fw_df, just_rc_df, site)
 
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
