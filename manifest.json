@@ -1,7 +1,7 @@
 {
-	"name": "wbhi-bids-email",
-	"label": "WBHI BIDSify and Email Gear",
-	"description": "Flywheel gear that wraps the relabel-container and bids-curate gears. Also sends an email update about redcap/wbhi matches.",
+	"name": "wbhi-email",
+	"label": "WBHI Email Gear",
+	"description": "Sends email updates about redcap/wbhi matches.",
 	"version": "0.1.0",
 	"author": "Joe Wexler",
 	"maintainer": "Joe Wexler",
@@ -20,7 +20,7 @@
 	"custom": {
 		"gear-builder": {
 			"category": "analysis",
-			"image": "jbwexler/wbhi-bids-email:0.1.0"
+			"image": "jbwexler/wbhi-email:0.1.0"
 		},
 		"flywheel": {
 			"suite": "WBHI"
@@ -29,11 +29,6 @@
 	"inputs": {
 		"key": {
 			"base": "api-key"
-		},
-		"to_reproin_csv": {
-			"base": "file",
-			"description": "CSV file containing a list of possible SeriesDescription patterns and their reproin mapping.",
-			"optional": false
 		}
 	},
 	"config": {

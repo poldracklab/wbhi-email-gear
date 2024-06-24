@@ -70,50 +70,8 @@ def create_session_view_df(container) -> pd.DataFrame:
         'acquisition.label',
         'acquisition.timestamp'
     ]
-    stamp = datetime(2023, 11, 6, 14, 55, 18)
-    filter = "acquisition.timestamp<stamp"
+    breakpoint()
     return create_view_df(container, columns, filter)
-
-def get_deid_sessions(file_df: pd.DataFrame) -> list:
-    dcm_tags = {
-            'file-metadata-importer-deid',
-            'file-classifier-deid',
-            'dcm2niix'
-    }
-    nii_tag = 'pydeface'
-
-    # Skip subject if all sessions have been bidsified
-    nonbids_df = file_df.groupby('subject.id').filter(
-        lambda x: x['session.info.BIDS'].isna().any()
-    )
-    
-    # Skip sessions if any dicoms or niftis missing proper tags
-    nii_df = nonbids_df[nonbids_df['file.type'] == 'nifti']
-    nii_df = nii_df[nii_df['file.tags'].apply(lambda x: nii_tag in x)]
-    filt_df = nonbids_df[nonbids_df['session.id'].isin(nii_df['session.id'])]
-    dcm_df = nii_df[nii_df['file.type'] == 'dicom']
-    dcm_df = dcm_df[dcm_df['file.tags'].apply(
-        lambda x, tags=dcm_tags: dcm_tags.issubset(x)
-    )]
-    if not dcm_df.empty:
-        filt_df = filt_df[filt_df['session.id'].isin(dcm_df['session.id'])]
-    else:
-        filt_df = filt_df[0:0]
-
-    # Raise warning if some non-bidsified sessions are filtered out
-    nonbids_ses_set = set(nonbids_df['subject.label'])
-    filt_ses_set = set(filt_df['subject.label'])
-    filt_out_set = nonbids_ses_set - filt_ses_set
-    if filt_out_set:
-        log.warning("The following subjects are not yet bidsified but "
-                    f"contain files that are missing necessary tags: \n{filt_out_set}"
-        )
-    return filt_df['session.id'].tolist()
-
-def import_reproin_csv(deid_project: ProjectOutput) -> dict:
-    with gtk_context.open_input('to_reproin_csv', 'r') as csv_file:
-        csv_reader = csv.reader(csv_file)
-        return {row[0]: row[1] for row in csv_reader}
 
 def get_acq_path(acq: AcquisitionListOutput) -> str:
     """Takes an acquisition and returns its path:
@@ -170,7 +128,7 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     # Since there's no way to reset a field to '', occassionally rid will be ' ' 
     # if it's value was deleted. Thus, we need to check for both cases.
     filter_logic = "[rid] = '' or [rid] = ' '"
-    redcap_data = redcap_project.export_records(filter_logic="[rid] = ''")
+    redcap_data = redcap_project.export_records(filter_logic=filter_logic)
     just_rc_list = []
     
     for record in redcap_data:
@@ -183,16 +141,21 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
         else:
             pi_id = record[f"{mri_pi_field}_other"].casefold()
         record_dict = {
-                "redcap_id": record["participant_id"],
                 "site": record["site"],
                 "date": datetime.strptime(record["mri_date"], DATE_FORMAT_RC),
-                "am_pm": record["mri_ampm"],
+                "am_pm": REDCAP_KEY["am_pm"][record["mri_ampm"]],
                 "pi_id": pi_id,
-                "sub_id": record["mri"].casefold()
+                "sub_id": record["mri"].casefold(),
+                "redcap_id": record["participant_id"]
         }
         just_rc_list.append(record_dict)
 
     return pd.DataFrame(just_rc_list).sort_values("date")
+
+def create_matches_df(redcap_project: Project) -> pd.DataFrame:
+    filter_logic = "[rid] != '' and [rid] != ' '"
+    redcap_data = redcap_project.export_records(filter_logic=filter_logic)
+
 
 def send_email(subject, html_content, sender, recipients, password):
     msg = MIMEMultipart()
@@ -205,7 +168,7 @@ def send_email(subject, html_content, sender, recipients, password):
        smtp_server.login(sender, password)
        smtp_server.sendmail(sender, recipients, msg.as_string())
 
-    log.info("Email sent to {recipients}")
+    log.info(f"Email sent to {recipients}")
 
 def send_wbhi_email(just_fw_df: pd.DataFrame, just_rc_df: pd.DataFrame, site=None) -> None:
     if site:
@@ -217,22 +180,23 @@ def send_wbhi_email(just_fw_df: pd.DataFrame, just_rc_df: pd.DataFrame, site=Non
 
     html_content = f"""
         <p>Hello,</p>
-        <p>Here is the weekly summary of unmatched sessions and/or redcap records:</p>
+        <p>Here is a weekly summary of unmatched Flywheel sessions and/or REDCap records:</p>
         <br>
-        <p>Flywheel sessions that didn't match any redcap records:</p>
-        {just_fw_html}
-        <br><br>
-        <p>Redcap records that didn't match any Flywheel sessions:</p>
+        <p>REDCap records that didn't match any Flywheel sessions:</p>
         {just_rc_html}
         <br><br>
-        <p>Best, </p>
+        <p>Flywheel sessions that didn't match any REDCap records:</p>
+        {just_fw_html}
+        <br><br>
+        <p>Best,</p>
         <p>WBHI Team</p>
     """
     send_email(
-        "Weekly WBHI Update",
+        "Weekly WBHI Summary",
         html_content,
         config["gmail_address"],
         ["jbwexler@stanford.edu"],
+        # ["jbwexler@stanford.edu", "buckholtz@stanford.edu", "cmtaylor@ucsb.edu", "markiewicz@stanford.edu"],
         config["gmail_password"]
     )
 
@@ -245,18 +209,12 @@ def main():
     
     #deid_project = client.lookup("wbhi/deid")
     deid_project = client.lookup("joe_test/deid_joe")
-    deid_file_df = create_file_view_df(deid_project)
-    deid_session_df = deid_file_df[['subject.label', 'session.tags']]
-    deid_session_df = deid_session_df[
-        deid_session_df['session.tags'].apply(lambda x: 'email' not in x)
-    ]
 
-    sessions = get_deid_sessions(deid_file_df)
-    to_reproin_dict = import_reproin_csv(deid_project)
-    deid_sessions_df = create_session_view_df(deid_project)
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
+    last_week_matches = create_matches_df(redcap_project)
     send_wbhi_email(just_fw_df, just_rc_df)
+
     for site in SITE_LIST:
         send_wbhi_email(just_fw_df, just_rc_df, site)
 
