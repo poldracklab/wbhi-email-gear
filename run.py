@@ -25,6 +25,22 @@ from wbhiutils.constants import *
 
 log = logging.getLogger(__name__)
 
+DATAVIEW_COLUMNS = [
+    'subject.label',
+    'session.id',
+    'session.tags',
+    'file.file_id',
+    'file.tags',
+    'file.type',
+    'file.created',
+    'acquisition.label',
+    'file.classification.Intent',
+    'file.classification.Features',
+    'file.classification.Measurement',
+    'file.classification.Custom'
+]
+
+
 def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
     """Get unique labels for all acquisitions in the container.
 
@@ -46,22 +62,6 @@ def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
    
     view = builder.build()
     return client.read_view_dataframe(view, container.id)
-
-def create_dcm_df(container, filter=None) -> pd.DataFrame:
-    columns = [
-        'subject.label',
-        'session.id',
-        'session.tags',
-        'file.file_id',
-        'file.tags',
-        'file.type',
-        'file.created',
-        'file.modality.intent'
-    ]
-    dcm_df = create_view_df(container, columns, filter)
-    dcm_df = dcm_df[dcm_df['file.type'] == 'dicom']
-    breakpoint()
-    return dcm_df
 
 def create_first_dcm_df(dcm_df: pd.DataFrame) -> pd.DataFrame:
     # Sort and drop duplicates to get first file from each session
@@ -91,7 +91,8 @@ def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
         "date": datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW),
         "am_pm": "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm",
         "pi_id": parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
-        "sub_id": parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold()
+        "sub_id": parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold(),
+        "ses_id": dicom.parents.session
     }
 
 def get_modalities(dicom: FileListOutput) -> str:
@@ -103,30 +104,35 @@ def get_modalities(dicom: FileListOutput) -> str:
     
 
 def create_new_matches_df() -> pd.DataFrame:
-    #deid_project = client.lookup("wbhi/deid")
-    deid_project = client.lookup("joe_test/deid_joe")
-    filter = "session.tags!=email"
-    dcm_df = create_dcm_df(deid_project, filter)    
-    first_file_df = create_first_dcm_df(dcm_df)
-    breakpoint()
+    deid_project = client.lookup("wbhi/pre-deid")
+    #deid_project = client.lookup("joe_test/deid_joe")
+    filter = "session.tags!=email,file.type=dicom"
+    dcm_df = create_view_df(deid_project, DATAVIEW_COLUMNS, filter)    
+    if dcm_df.empty:
+        return dcm_df
+    first_dcm_df = create_first_dcm_df(dcm_df)
+
     hdr_list = []
-    for file_id,  in first_file_df[['file.file_id', 'subject.label']]:
-        file = client.get_file(file_id)
-        site = SITE_KEY_REVERSE(sub_label[0])
-        hdr_fields = get_hdr_fields(file, site)
-        modalities = get_modalities()
+    for index, row in first_dcm_df.iterrows():
+        dcm = client.get_file(row['file.file_id'])
+        site = SITE_KEY_REVERSE[row['subject.label'][0]]
+        hdr_fields = get_hdr_fields(dcm, site)
+        #modalities = get_modalities()
 
         hdr_list.append(hdr_fields)
 
-    breakpoint()
-    
+    hdr_df = pd.DataFrame(hdr_list)
+    hdr_df = hdr_df.drop('error', axis=1)
+
+    return hdr_df.sort_values('date')
 
 def create_just_fw_df() -> pd.DataFrame:
     today = datetime.today()
     hdr_list = []
     for site in SITE_LIST:
         project = client.lookup(f'{site}/Inbound Data')
-        dcm_df = create_dcm_df(project)
+        filter = "file.type=dicom"
+        dcm_df = create_view_df(project, DATAVIEW_COLUMNS, filter)
         first_file_df = create_first_dcm_df(dcm_df)
         if first_file_df.empty:
             continue
@@ -189,18 +195,32 @@ def send_email(subject, html_content, sender, recipients, password):
 
     log.info(f"Email sent to {recipients}")
 
-def send_wbhi_email(just_fw_df: pd.DataFrame, just_rc_df: pd.DataFrame, site=None) -> None:
-    if site:
-        just_fw_df = just_fw_df[just_fw_df["site"] == site]
-        just_rc_df = just_rc_df[just_rc_df["site"] == site]
+def send_wbhi_email(
+        new_matches_df: pd.DataFrame,
+        just_fw_df: pd.DataFrame,
+        just_rc_df: pd.DataFrame,
+        site=None,
+        email_tag=False) -> None:
 
+    if site:
+        try:
+            new_matches_df = new_matches_df[new_matches_df["site"] == site]
+            just_fw_df = just_fw_df[just_fw_df["site"] == site]
+            just_rc_df = just_rc_df[just_rc_df["site"] == site]
+        except KeyError:
+            pass
+
+    new_matches_html = new_matches_df.to_html(index=False)
     just_fw_html = just_fw_df.to_html(index=False)
     just_rc_html = just_rc_df.to_html(index=False)
 
     html_content = f"""
         <p>Hello,</p>
-        <p>Here is a weekly summary of unmatched Flywheel sessions and/or REDCap records:</p>
+        <p>This is a weekly summary of matches between Flywheel sessions and REDCap records.</p>
         <br>
+        <p>New matches since the last summary:</p>
+        {new_matches_html}
+        <br><br>
         <p>REDCap records that didn't match any Flywheel sessions:</p>
         {just_rc_html}
         <br><br>
@@ -219,6 +239,11 @@ def send_wbhi_email(just_fw_df: pd.DataFrame, just_rc_df: pd.DataFrame, site=Non
         config["gmail_password"]
     )
 
+    if email_tag and not new_matches_df.empty:
+        for index, ses_id in new_matches_df["ses_id"].items():
+            session = client.get_session(ses_id)
+            session.add_tag('email')
+
 def main():
     gtk_context.init_logging()
     gtk_context.log_config()
@@ -226,14 +251,14 @@ def main():
     redcap_api_key = config["redcap_api_key"]
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
     
-    new_matched_df = create_new_matches_df()
+    new_matches_df = create_new_matches_df()
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
     last_week_matches = create_matches_df(redcap_project)
-    send_wbhi_email(just_fw_df, just_rc_df)
+    send_wbhi_email(new_matches_df, just_fw_df, just_rc_df, email_tag=True)
 
     for site in SITE_LIST:
-        send_wbhi_email(just_fw_df, just_rc_df, site)
+        send_wbhi_email(new_matches_df, just_fw_df, just_rc_df, site=site)
 
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
