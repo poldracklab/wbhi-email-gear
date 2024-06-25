@@ -47,31 +47,27 @@ def create_view_df(container, columns: list, filter=None) -> pd.DataFrame:
     view = builder.build()
     return client.read_view_dataframe(view, container.id)
 
-def create_file_view_df(container) -> pd.DataFrame:
+def create_dcm_df(container, filter=None) -> pd.DataFrame:
     columns = [
-        'subject.id',
         'subject.label',
         'session.id',
         'session.tags',
-        'session.info.BIDS',
-        'acquisition.label',
         'file.file_id',
         'file.tags',
         'file.type',
-        'file.created'
+        'file.created',
+        'file.modality.intent'
     ]
-    return create_view_df(container, columns)
-
-def create_session_view_df(container) -> pd.DataFrame:
-    columns = [
-        'subject.label',
-        'session.id',
-        'session.tags',
-        'acquisition.label',
-        'acquisition.timestamp'
-    ]
+    dcm_df = create_view_df(container, columns, filter)
+    dcm_df = dcm_df[dcm_df['file.type'] == 'dicom']
     breakpoint()
-    return create_view_df(container, columns, filter)
+    return dcm_df
+
+def create_first_dcm_df(dcm_df: pd.DataFrame) -> pd.DataFrame:
+    # Sort and drop duplicates to get first file from each session
+    dcm_df = dcm_df.sort_values(by=['session.id', 'file.created'])
+    return dcm_df.drop_duplicates(subset='session.id')
+    
 
 def get_acq_path(acq: AcquisitionListOutput) -> str:
     """Takes an acquisition and returns its path:
@@ -98,21 +94,44 @@ def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
         "sub_id": parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold()
     }
 
+def get_modalities(dicom: FileListOutput) -> str:
+    if "file-classifier" not in dicom.tags or "header" not in dicom.info:
+        log.error(f"File-classifier gear has not been run on {get_acq_path(acq)}")
+        return {"error": "FILE_CLASSIFIER_NOT_RUN"}
+
+    dcm_hdr = dicom.reload().info["header"]["dicom"]
+    
+
+def create_new_matches_df() -> pd.DataFrame:
+    #deid_project = client.lookup("wbhi/deid")
+    deid_project = client.lookup("joe_test/deid_joe")
+    filter = "session.tags!=email"
+    dcm_df = create_dcm_df(deid_project, filter)    
+    first_file_df = create_first_dcm_df(dcm_df)
+    breakpoint()
+    hdr_list = []
+    for file_id,  in first_file_df[['file.file_id', 'subject.label']]:
+        file = client.get_file(file_id)
+        site = SITE_KEY_REVERSE(sub_label[0])
+        hdr_fields = get_hdr_fields(file, site)
+        modalities = get_modalities()
+
+        hdr_list.append(hdr_fields)
+
+    breakpoint()
+    
+
 def create_just_fw_df() -> pd.DataFrame:
     today = datetime.today()
     hdr_list = []
     for site in SITE_LIST:
         project = client.lookup(f'{site}/Inbound Data')
-        session_df = create_file_view_df(project)
-        session_df = session_df[session_df['file.type'] == 'dicom']
-
-        # Sort and drop duplicates to get first file from each session
-        session_df = session_df.sort_values(by=['session.id', 'file.created'])
-        session_df = session_df.drop_duplicates(subset='session.id')
-        if session_df.empty:
+        dcm_df = create_dcm_df(project)
+        first_file_df = create_first_dcm_df(dcm_df)
+        if first_file_df.empty:
             continue
 
-        for file_id in session_df['file.file_id']:
+        for file_id in first_file_df['file.file_id']:
             file = client.get_file(file_id)
             hdr_fields = get_hdr_fields(file, site)
             delta = today - hdr_fields['date']
@@ -207,9 +226,7 @@ def main():
     redcap_api_key = config["redcap_api_key"]
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
     
-    #deid_project = client.lookup("wbhi/deid")
-    deid_project = client.lookup("joe_test/deid_joe")
-
+    new_matched_df = create_new_matches_df()
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
     last_week_matches = create_matches_df(redcap_project)
