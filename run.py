@@ -213,7 +213,6 @@ def send_wbhi_email(
     new_matches_df_copy = new_matches_df.copy()
     just_rc_df_copy = just_rc_df.copy()
     just_fw_df_copy = just_rc_df.copy()
-    just_rc_df = just_rc_df[just_rc_df["site"] == site]
     
     if site != 'admin':
         if not new_matches_df_copy.empty:
