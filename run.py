@@ -207,7 +207,7 @@ def send_wbhi_email(
         new_matches_df: pd.DataFrame,
         just_rc_df: pd.DataFrame,
         just_fw_df: pd.DataFrame,
-        site=None,
+        site: str,
         email_tag=False) -> None:
 
     new_matches_df_copy = new_matches_df.copy()
@@ -215,7 +215,7 @@ def send_wbhi_email(
     just_fw_df_copy = just_rc_df.copy()
     just_rc_df = just_rc_df[just_rc_df["site"] == site]
     
-    if site:
+    if site != 'admin':
         if not new_matches_df_copy.empty:
             new_matches_df_copy = new_matches_df_copy[new_matches_df_copy["site"] == site]
         if not just_rc_df_copy.empty:
@@ -257,8 +257,7 @@ def send_wbhi_email(
         "Weekly WBHI Summary",
         html_content,
         config["gmail_address"],
-        email_list,
-        # ["jbwexler@stanford.edu", "buckholtz@stanford.edu", "cmtaylor@ucsb.edu", "markiewicz@stanford.edu"],
+        EMAIL_DICT[site],
         config["gmail_password"],
         [os.path.join(csv_path, basename) for basename in csv_list]
     )
@@ -278,11 +277,10 @@ def main():
     new_matches_df = create_new_matches_df()
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
-    send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, email_tag=True)
+    send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, 'admin', email_tag=True)
 
     for site in SITE_LIST:
-        send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, site=site)
-        breakpoint()
+        send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, site)
 
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
