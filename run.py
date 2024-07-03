@@ -212,7 +212,7 @@ def send_wbhi_email(
 
     new_matches_df_copy = new_matches_df.copy()
     just_rc_df_copy = just_rc_df.copy()
-    just_fw_df_copy = just_rc_df.copy()
+    just_fw_df_copy = just_fw_df.copy()
     
     if site != 'admin':
         if not new_matches_df_copy.empty:
@@ -249,7 +249,6 @@ def send_wbhi_email(
         <p>Best,</p>
         <p>WBHI Team</p>
     """
-    email_list = ["jbwexler@stanford.edu"]
     csv_list = ['matches.csv', 'redcap_unmatched.csv', 'flywheel_unmatched.csv']
 
     send_email(
