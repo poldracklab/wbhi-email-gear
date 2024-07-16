@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 
-import csv
 import flywheel_gear_toolkit
 import flywheel
 import logging
@@ -13,17 +12,19 @@ from email.mime.application import MIMEApplication
 from datetime import datetime, timedelta
 import pandas as pd
 from redcap import Project
-from flywheel import (
-    ProjectOutput,
-    SessionListOutput,
-    AcquisitionListOutput,
-    FileListOutput,
-    Gear
-)
+from flywheel import FileListOutput
 
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
 from wbhiutils import parse_dicom_hdr
-from wbhiutils.constants import *
+from wbhiutils.constants import (
+    EMAIL_DICT,
+    REDCAP_API_URL,
+    REDCAP_KEY,
+    SITE_KEY_REVERSE,
+    SITE_LIST,
+    DATE_FORMAT_FW,
+    DATE_FORMAT_RC
+)
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +43,12 @@ DATAVIEW_COLUMNS = (
     'file.classification.Custom'
 )
 
+DICOM_FUNCTION_DICT= {
+    "date": lambda dcm_hdr, site: datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW),
+    "am_pm": lambda dcm_hdr, site: "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm",
+    "pi_id": lambda dcm_hdr, site: parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
+    "sub_id": lambda dcm_hdr, site: parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold()
+}
 
 def create_view_df(container, columns: tuple, filter=None) -> pd.DataFrame:
     """Get unique labels for all acquisitions in the container.
@@ -72,35 +79,45 @@ def create_first_dcm_df(dcm_df: pd.DataFrame) -> pd.DataFrame:
     return first_df.drop_duplicates(subset='session.id')
     
 
-def get_acq_path(acq: AcquisitionListOutput) -> str:
-    """Takes an acquisition and returns its path:
-    project/subject/session/acquisition"""
-    project_label = client.get_project(acq.parents.project).label
-    sub_label = client.get_subject(acq.parents.subject).label
-    ses_label = client.get_session(acq.parents.session).label
+def get_acq_or_file_path(container) -> str:
+    """Takes a container and returns its path."""
+    project_label = client.get_project(container.parents.project).label
+    sub_label = client.get_subject(container.parents.subject).label
+    ses_label = client.get_session(container.parents.session).label
 
-    return f"{project_label}/{sub_label}/{ses_label}/{acq.label}"
+    if container.container_type == 'acq':
+        return f"{project_label}/{sub_label}/{ses_label}/{container.label}"
+    elif container.container_type == 'file':
+        acq_label = client.get_acquisition(container.parents.acquisition).label
+        return f"{project_label}/{sub_label}/{ses_label}/{acq_label}/{container.name}/"
 
 def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
     """Get relevant fields from dicom header of an acquisition"""
+
     if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.error(f"File-classifier gear has not been run on {get_acq_path(acq)}")
+        log.error(f"File-classifier gear has not been run on {get_acq_or_file_path(dicom)}")
         return {"error": "FILE_CLASSIFIER_NOT_RUN"}
 
     dcm_hdr = dicom.reload().info["header"]["dicom"]
-    return {
+    hdr_fields = {
         "error": None,
         "site": site,
-        "date": datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW),
-        "am_pm": "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm",
-        "pi_id": parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
-        "sub_id": parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold(),
         "ses_id": dicom.parents.session
     }
 
+    for key, function in DICOM_FUNCTION_DICT.items(): 
+        try:
+            hdr_fields[key] = function(dcm_hdr, site)
+        except KeyError:
+            hdr_fields[key] = None
+            log.error(f"{get_acq_or_file_path(dicom)} is missing {key}.")
+            hdr_fields["error"] = "MISSING_DICOM_FIELDS"
+
+    return hdr_fields
+        
 def get_modalities(dicom: FileListOutput) -> str:
     if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.error(f"File-classifier gear has not been run on {get_acq_path(acq)}")
+        log.error(f"File-classifier gear has not been run on {get_acq_or_file_path(acq)}")
         return {"error": "FILE_CLASSIFIER_NOT_RUN"}
 
     dcm_hdr = dicom.reload().info["header"]["dicom"]
@@ -143,8 +160,13 @@ def create_just_fw_df() -> pd.DataFrame:
         for file_id in first_file_df['file.file_id']:
             file = client.get_file(file_id)
             hdr_fields = get_hdr_fields(file, site)
-            delta = today - hdr_fields['date']
-            if hdr_fields['error'] == None and delta >= timedelta(days=2):
+            if hdr_fields['error'] == "FILE_CLASSIFIER_NOT_RUN":
+                continue
+            if hdr_fields['date']:
+                delta = today - hdr_fields['date']
+                if delta >= timedelta(days=2):
+                    hdr_list.append(hdr_fields)
+            else: 
                 hdr_list.append(hdr_fields)
 
     hdr_df = pd.DataFrame(hdr_list)
@@ -193,7 +215,6 @@ def send_email(subject, html_content, sender, recipients, password, files=None):
                 fil.read(),
                 Name=os.path.basename(f)
             )
-        # After the file is closed
         part['Content-Disposition'] = 'attachment; filename="%s"' % os.path.basename(f)
         msg.attach(part)
 
@@ -275,8 +296,8 @@ def main():
     new_matches_df = create_new_matches_df()
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
-    send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, 'admin', email_tag=True)
 
+    send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, 'admin', email_tag=True)
     for site in SITE_LIST:
         send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, site)
 
