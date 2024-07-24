@@ -185,6 +185,8 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
         if not record["site"]:
             log.error("Record number %s is missing 'site'" % record["participant_id"]) 
             continue
+        if record["site"] not in SITE_LIST:
+            continue
         mri_pi_field = "mri_pi_" + record["site"]
         if record[mri_pi_field] != '99':
             pi_id = record[mri_pi_field].casefold()
