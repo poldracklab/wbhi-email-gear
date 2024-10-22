@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 RUN mkdir -p ${FLYWHEEL}
 COPY run.py ${FLYWHEEL}/run.py
+RUN chmod +x ${FLYWHEEL}/run.py
 WORKDIR ${FLYWHEEL}
 
 ENTRYPOINT ["/flywheel/v0/run.py"]
