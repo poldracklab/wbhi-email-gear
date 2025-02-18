@@ -202,14 +202,26 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
             pi_id = record[mri_pi_field].casefold()
         else:
             pi_id = record[f"{mri_pi_field}_other"].casefold()
-        record_dict = {
-            "site": record["site"],
-            "date": datetime.strptime(record["mri_date"], DATE_FORMAT_RC),
-            "am_pm": REDCAP_KEY["am_pm"][record["mri_ampm"]],
-            "pi_id": pi_id,
-            "sub_id": record["mri"].casefold(),
-            "redcap_id": record["participant_id"],
-        }
+        try:
+            record_dict = {
+                "site": record["site"],
+                "date": datetime.strptime(record["mri_date"], DATE_FORMAT_RC),
+                "am_pm": REDCAP_KEY["am_pm"][record["mri_ampm"]],
+                "pi_id": pi_id,
+                "sub_id": record["mri"].casefold(),
+                "redcap_id": record["participant_id"],
+            }
+        except Exception:
+            orig = {
+                "site": record["site"],
+                "date": record["mri_date"],
+                "am_pm": record["mri_ampm"],
+                "pi_id": pi_id,
+                "sub_id": record["mri"],
+                "redcap_id": record["participant_id"],
+            }
+            log.error(f"Failed to create record from {orig}")
+            raise
         just_rc_list.append(record_dict)
 
     return pd.DataFrame(just_rc_list).sort_values("date")
