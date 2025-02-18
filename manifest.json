@@ -2,7 +2,7 @@
 	"name": "wbhi-email",
 	"label": "WBHI Email Gear",
 	"description": "Sends email updates about redcap/wbhi matches.",
-	"version": "0.1.7",
+	"version": "0.1.8",
 	"author": "Joe Wexler",
 	"maintainer": "Joe Wexler",
 	"cite": "",
@@ -20,7 +20,7 @@
 	"custom": {
 		"gear-builder": {
 			"category": "analysis",
-			"image": "poldracklab/wbhi-email:0.1.7"
+			"image": "poldracklab/wbhi-email:0.1.8"
 		},
 		"flywheel": {
 			"suite": "WBHI"
