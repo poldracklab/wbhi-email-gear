@@ -113,7 +113,7 @@ def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
     for key, function in DICOM_FUNCTION_DICT.items():
         try:
             hdr_fields[key] = function(dcm_hdr, site)
-        except KeyError:
+        except (KeyError, ValueError, AttributeError):
             hdr_fields[key] = None
             log.error(f"{get_acq_or_file_path(dicom)} is missing {key}.")
             hdr_fields["error"] = "MISSING_DICOM_FIELDS"
