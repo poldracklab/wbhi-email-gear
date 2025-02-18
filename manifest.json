@@ -2,12 +2,12 @@
 	"name": "wbhi-email",
 	"label": "WBHI Email Gear",
 	"description": "Sends email updates about redcap/wbhi matches.",
-	"version": "0.1.5",
+	"version": "0.1.6",
 	"author": "Joe Wexler",
 	"maintainer": "Joe Wexler",
 	"cite": "",
 	"license": "MIT",
-	"url": "",
+	"url": "https://github.com/poldracklab/wbhi-email-gear",
 	"source": "",
 	"environment": {
 		"FLYWHEEL": "/flywheel/v0",
@@ -20,7 +20,7 @@
 	"custom": {
 		"gear-builder": {
 			"category": "analysis",
-			"image": "jbwexler/wbhi-email:0.1.5"
+			"image": "poldracklab/wbhi-email:0.1.6"
 		},
 		"flywheel": {
 			"suite": "WBHI"
