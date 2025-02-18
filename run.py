@@ -192,36 +192,42 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     just_rc_list = []
 
     for record in redcap_data:
-        if not record["site"]:
-            log.error("Record number %s is missing 'site'" % record["participant_id"])
+        site = record.get("site")
+        redcap_id = record.get("participant_id")
+        if not site:
+            log.error("Record number %s is missing 'site'" % redcap_id)
             continue
-        if record["site"] not in SITE_LIST:
+        if site not in SITE_LIST:
+            log.debug("%s not in %s", site, SITE_LIST)
             continue
-        mri_pi_field = "mri_pi_" + record["site"]
+
+        mri_pi_field = f"mri_pi_{site}"
+        # Some labels may be empty strings
         if record[mri_pi_field] != "99":
             pi_id = record[mri_pi_field].casefold()
         else:
             pi_id = record[f"{mri_pi_field}_other"].casefold()
+
+        record_dict = {
+            "site": site,
+            "redcap_id": redcap_id,
+            "pi_id": pi_id,
+            "sub_id": record.get("mri").casefold(),
+        }
+
+        # Dates may be blank
         try:
-            record_dict = {
-                "site": record["site"],
-                "date": datetime.strptime(record["mri_date"], DATE_FORMAT_RC),
-                "am_pm": REDCAP_KEY["am_pm"][record["mri_ampm"]],
-                "pi_id": pi_id,
-                "sub_id": record["mri"].casefold(),
-                "redcap_id": record["participant_id"],
-            }
-        except Exception:
-            orig = {
-                "site": record["site"],
-                "date": record["mri_date"],
-                "am_pm": record["mri_ampm"],
-                "pi_id": pi_id,
-                "sub_id": record["mri"],
-                "redcap_id": record["participant_id"],
-            }
-            log.error(f"Failed to create record from {orig}")
-            raise
+            record_dict["date"] = datetime.strptime(record["mri_date"], DATE_FORMAT_RC)
+        except ValueError:
+            log.error("Could not extract date information for record number %s", redcap_id)
+            record_dict["date"] = pd.NaT
+
+        try:
+            record_dict["am_pm"] = REDCAP_KEY["am_pm"][record["mri_ampm"]]
+        except ValueError:
+            log.error("Could not extract am/pm information for record number %s", redcap_id)
+            record_dict["am_pm"] = pd.NaT
+
         just_rc_list.append(record_dict)
 
     return pd.DataFrame(just_rc_list).sort_values("date")
