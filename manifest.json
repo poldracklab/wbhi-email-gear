@@ -43,6 +43,11 @@
 		"gmail_password": {
 			"description": "Password of gmail account to use for sending emails",
 			"type": "string"
+		},
+		"admin_only": {
+			"description": "If true, only send emails to admin users",
+			"type": "boolean",
+			"default": false
 		}
 	},
 	"command": "python run.py"

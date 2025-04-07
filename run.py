@@ -46,8 +46,8 @@ DATAVIEW_COLUMNS = (
 DICOM_FUNCTION_DICT= {
     "date": lambda dcm_hdr, site: datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW),
     "am_pm": lambda dcm_hdr, site: "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm",
-    "pi_id": lambda dcm_hdr, site: parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
-    "sub_id": lambda dcm_hdr, site: parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold()
+    "pi_id": lambda dcm_hdr, site: parse_dicom_hdr.parse_pi(dcm_hdr, site),
+    "sub_id": lambda dcm_hdr, site: parse_dicom_hdr.parse_sub(dcm_hdr, site)
 }
 
 def create_view_df(container, columns: tuple, filter=None) -> pd.DataFrame:
@@ -112,6 +112,11 @@ def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
             hdr_fields[key] = None
             log.error(f"{get_acq_or_file_path(dicom)} is missing {key}.")
             hdr_fields["error"] = "MISSING_DICOM_FIELDS"
+        except ValueError:
+            hdr_fields[key] = None
+            log.error(f"{key} in {get_acq_or_file_path(dicom)} failed to parse.")
+            hdr_fields["error"] = "DICOM_FIELDS_PARSE_ERROR"
+
 
     return hdr_fields
         
@@ -194,12 +199,18 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
             pi_id = record[f"{mri_pi_field}_other"].casefold()
         record_dict = {
                 "site": record["site"],
-                "date": datetime.strptime(record["mri_date"], DATE_FORMAT_RC),
                 "am_pm": REDCAP_KEY["am_pm"][record["mri_ampm"]],
                 "pi_id": pi_id,
                 "sub_id": record["mri"].casefold(),
                 "redcap_id": record["participant_id"]
         }
+        try:
+            record_dict["date"] = datetime.strptime(record["mri_date"], DATE_FORMAT_RC),
+        except ValueError:
+            log.error("Record number %s is missing 'mri_date'" % record['participant_id'])
+            record_dict["date"] = None
+
+
         just_rc_list.append(record_dict)
 
     return pd.DataFrame(just_rc_list).sort_values("date")
@@ -299,9 +310,13 @@ def main():
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
 
-    send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, 'admin', email_tag=True)
-    for site in SITE_LIST:
-        send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, site)
+    log.info('Sending emails to admin...')
+    send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, 'admin')
+
+    if not config['admin_only']:
+        log.info("Sending emails to individual sites...")
+        for site in SITE_LIST:
+            send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, site, email_tag=True)
 
 if __name__ == "__main__":
     with flywheel_gear_toolkit.GearToolkitContext() as gtk_context:
