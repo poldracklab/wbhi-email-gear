@@ -208,21 +208,18 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     just_rc_list = []
 
     for record in redcap_data:
-        site = record.get("site")
         redcap_id = record.get("participant_id")
-        if not site:
-            log.error("Record number %s is missing 'site'" % redcap_id)
-            continue
-        if site not in SITE_LIST:
-            log.debug("%s not in %s", site, SITE_LIST)
-            continue
+        site = record.get("site")
 
-        mri_pi_field = f"mri_pi_{site}"
-        # Some labels may be empty strings
-        if record[mri_pi_field] != "99":
-            pi_id = record[mri_pi_field].casefold()
+        if site:
+            mri_pi_field = f"mri_pi_{site}"
+            # Some labels may be empty strings
+            if record[mri_pi_field] != "99":
+                pi_id = record[mri_pi_field].casefold()
+            else:
+                pi_id = record[f"{mri_pi_field}_other"].casefold()
         else:
-            pi_id = record[f"{mri_pi_field}_other"].casefold()
+            pi_id = None
 
         record_dict = {
             "site": site,
