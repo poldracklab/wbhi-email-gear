@@ -138,16 +138,6 @@ def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
     return meta
 
 
-def get_modalities(dicom: FileListOutput) -> str:
-    if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.error(
-            f"File-classifier gear has not been run on {get_acq_or_file_path(acq)}"
-        )
-        return {"error": "FILE_CLASSIFIER_NOT_RUN"}
-
-    dcm_hdr = dicom.reload().info["header"]["dicom"]
-
-
 def create_new_matches_df() -> pd.DataFrame:
     pre_deid_project = client.lookup("wbhi/pre-deid")
     filter = "session.tags!=email,file.type=dicom"
@@ -161,8 +151,6 @@ def create_new_matches_df() -> pd.DataFrame:
         dicom = client.get_file(row["file.file_id"])
         site = SITE_KEY_REVERSE[row["subject.label"][0]]
         hdr_fields = get_hdr_fields(dicom, site)
-        # modalities = get_modalities()
-
         hdr_list.append(hdr_fields)
 
     hdr_df = pd.DataFrame(hdr_list)
