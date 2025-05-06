@@ -50,8 +50,8 @@ DICOM_FUNCTION_DICT = {
     "am_pm": lambda dcm_hdr, site: "am"
     if float(dcm_hdr["StudyTime"]) < 120000
     else "pm",
-    "pi_id": lambda dcm_hdr, site: parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold(),
-    "sub_id": lambda dcm_hdr, site: parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold(),
+    "pi_id": lambda dcm_hdr, site: parse_dicom_hdr.parse_pi(dcm_hdr, site),
+    "sub_id": lambda dcm_hdr, site: parse_dicom_hdr.parse_sub(dcm_hdr, site),
 }
 
 
@@ -117,6 +117,10 @@ def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
             hdr_fields[key] = None
             log.error(f"{get_acq_or_file_path(dicom)} is missing {key}.")
             hdr_fields["error"] = "MISSING_DICOM_FIELDS"
+        except ValueError:
+            hdr_fields[key] = None
+            log.error(f"{key} in {get_acq_or_file_path(dicom)} failed to parse.")
+            hdr_fields["error"] = "DICOM_FIELDS_PARSE_ERROR"
 
     return hdr_fields
 
@@ -219,13 +223,17 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
         try:
             record_dict["date"] = datetime.strptime(record["mri_date"], DATE_FORMAT_RC)
         except ValueError:
-            log.error("Could not extract date information for record number %s", redcap_id)
+            log.error(
+                "Could not extract date information for record number %s", redcap_id
+            )
             record_dict["date"] = pd.NaT
 
         try:
             record_dict["am_pm"] = REDCAP_KEY["am_pm"][record["mri_ampm"]]
         except ValueError:
-            log.error("Could not extract am/pm information for record number %s", redcap_id)
+            log.error(
+                "Could not extract am/pm information for record number %s", redcap_id
+            )
             record_dict["am_pm"] = pd.NaT
 
         just_rc_list.append(record_dict)
@@ -331,9 +339,15 @@ def main():
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
 
-    send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, "admin", email_tag=True)
-    for site in SITE_LIST:
-        send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, site)
+    log.info("Sending emails to admin...")
+    send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, "admin")
+
+    if not config["admin_only"]:
+        log.info("Sending emails to individual sites...")
+        for site in SITE_LIST:
+            send_wbhi_email(
+                new_matches_df, just_rc_df, just_fw_df, site, email_tag=True
+            )
 
 
 if __name__ == "__main__":
