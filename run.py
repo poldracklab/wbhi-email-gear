@@ -15,8 +15,8 @@ from redcap import Project
 from flywheel import FileListOutput
 
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
-from wbhiutils import parse_dicom_hdr
-from wbhiutils.constants import (
+from wbhiutils import parse_dicom_hdr  # noqa: E402
+from wbhiutils.constants import (  # noqa: E402
     EMAIL_DICT,
     REDCAP_API_URL,
     REDCAP_KEY,
@@ -100,29 +100,42 @@ def get_acq_or_file_path(container) -> str:
 
 def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
     """Get relevant fields from dicom header of an acquisition"""
+    # Reload the dicom file to ensure dicom header is loaded
+    dicom = dicom.reload()
+    dcm = get_acq_or_file_path(dicom)
 
     if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.error(
-            f"File-classifier gear has not been run on {get_acq_or_file_path(dicom)}"
-        )
+        log.error("File-classifier gear has not been run on %s", dcm)
         return {"error": "FILE_CLASSIFIER_NOT_RUN"}
 
-    dcm_hdr = dicom.reload().info["header"]["dicom"]
-    hdr_fields = {"error": None, "site": site, "ses_id": dicom.parents.session}
+    dcm_hdr = dicom.info["header"]["dicom"]
+    meta = {"error": None, "site": site, "ses_id": dicom.parents.session}
 
-    for key, function in DICOM_FUNCTION_DICT.items():
-        try:
-            hdr_fields[key] = function(dcm_hdr, site)
-        except (KeyError, ValueError, AttributeError):
-            hdr_fields[key] = None
-            log.error(f"{get_acq_or_file_path(dicom)} is missing {key}.")
-            hdr_fields["error"] = "MISSING_DICOM_FIELDS"
-        except ValueError:
-            hdr_fields[key] = None
-            log.error(f"{key} in {get_acq_or_file_path(dicom)} failed to parse.")
-            hdr_fields["error"] = "DICOM_FIELDS_PARSE_ERROR"
+    try:
+        meta["pi_id"] = parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold()
+    except (KeyError, ValueError):
+        log.debug("%s problem fetching PI ID", dcm)
+        meta["error"] = "MISSING_DICOM_FIELDS"
 
-    return hdr_fields
+    try:
+        meta["sub_id"] = parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold()
+    except KeyError:
+        log.debug("%s problem fetching SUB ID", dcm)
+        meta["error"] = "MISSING_DICOM_FIELDS"
+
+    try:
+        meta["date"] = datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW)
+    except KeyError:
+        log.debug("%s problem fetching DATE", dcm)
+        meta["error"] = "MISSING_DICOM_FIELDS"
+
+    try:
+        meta["am_pm"] = "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm"
+    except KeyError:
+        log.debug("%s problem fetching AM/PM", dcm)
+        meta["error"] = "MISSING_DICOM_FIELDS"
+
+    return meta
 
 
 def get_modalities(dicom: FileListOutput) -> str:
@@ -136,19 +149,18 @@ def get_modalities(dicom: FileListOutput) -> str:
 
 
 def create_new_matches_df() -> pd.DataFrame:
-    deid_project = client.lookup("wbhi/pre-deid")
-    # deid_project = client.lookup("joe_test/deid_joe")
+    pre_deid_project = client.lookup("wbhi/pre-deid")
     filter = "session.tags!=email,file.type=dicom"
-    dcm_df = create_view_df(deid_project, DATAVIEW_COLUMNS, filter)
+    dcm_df = create_view_df(pre_deid_project, DATAVIEW_COLUMNS, filter)
     if dcm_df.empty:
         return dcm_df
     first_dcm_df = create_first_dcm_df(dcm_df)
 
     hdr_list = []
     for index, row in first_dcm_df.iterrows():
-        dcm = client.get_file(row["file.file_id"])
+        dicom = client.get_file(row["file.file_id"])
         site = SITE_KEY_REVERSE[row["subject.label"][0]]
-        hdr_fields = get_hdr_fields(dcm, site)
+        hdr_fields = get_hdr_fields(dicom, site)
         # modalities = get_modalities()
 
         hdr_list.append(hdr_fields)
@@ -175,7 +187,7 @@ def create_just_fw_df() -> pd.DataFrame:
             hdr_fields = get_hdr_fields(file, site)
             if hdr_fields["error"] == "FILE_CLASSIFIER_NOT_RUN":
                 continue
-            if hdr_fields["date"]:
+            if "date" in hdr_fields:
                 delta = today - hdr_fields["date"]
                 if delta >= timedelta(days=2):
                     hdr_list.append(hdr_fields)
@@ -282,17 +294,21 @@ def send_wbhi_email(
         if not just_fw_df_copy.empty:
             just_fw_df_copy = just_fw_df_copy[just_fw_df_copy["site"] == site]
 
-    new_matches_html = new_matches_df_copy.to_html(index=False)
-    just_rc_html = just_rc_df_copy.to_html(index=False)
-    just_fw_html = just_fw_df_copy.to_html(index=False)
+    new_matches_html = new_matches_df_copy.to_html(index=False, na_rep="")
+    just_rc_html = just_rc_df_copy.to_html(index=False, na_rep="")
+    just_fw_html = just_fw_df_copy.to_html(index=False, na_rep="")
 
     csv_path = os.path.join(os.environ["FLYWHEEL"], "csv")
     if not os.path.exists(csv_path):
         os.makedirs(csv_path)
-    new_matches_df_copy.to_csv(os.path.join(csv_path, "matches.csv"), index=False)
-    just_rc_df_copy.to_csv(os.path.join(csv_path, "redcap_unmatched.csv"), index=False)
+    new_matches_df_copy.to_csv(
+        os.path.join(csv_path, "matches.csv"), index=False, na_rep=""
+    )
+    just_rc_df_copy.to_csv(
+        os.path.join(csv_path, "redcap_unmatched.csv"), index=False, na_rep=""
+    )
     just_fw_df_copy.to_csv(
-        os.path.join(csv_path, "flywheel_unmatched.csv"), index=False
+        os.path.join(csv_path, "flywheel_unmatched.csv"), index=False, na_rep=""
     )
 
     html_content = f"""
