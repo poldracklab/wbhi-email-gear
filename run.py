@@ -18,6 +18,7 @@ pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils
 from wbhiutils import parse_dicom_hdr  # noqa: E402
 from wbhiutils.constants import (  # noqa: E402
     EMAIL_DICT,
+    ADMIN_EMAIL,
     REDCAP_API_URL,
     REDCAP_KEY,
     SITE_KEY_REVERSE,
@@ -263,7 +264,7 @@ def send_wbhi_email(
     just_rc_df: pd.DataFrame,
     just_fw_df: pd.DataFrame,
     site: str,
-    email_tag=False,
+    test_run=False,
 ) -> None:
     new_matches_df_copy = new_matches_df.copy()
     just_rc_df_copy = just_rc_df.copy()
@@ -314,16 +315,21 @@ def send_wbhi_email(
     """
     csv_list = ["matches.csv", "redcap_unmatched.csv", "flywheel_unmatched.csv"]
 
+    if test_run:
+        recipients = [ADMIN_EMAIL]
+    else:
+        recipients = EMAIL_DICT[site]
+
     send_email(
         "Weekly WBHI Summary",
         html_content,
         config["gmail_address"],
-        EMAIL_DICT[site],
+        recipients,
         config["gmail_password"],
         [os.path.join(csv_path, basename) for basename in csv_list],
     )
 
-    if email_tag and not new_matches_df_copy.empty:
+    if not test_run and not new_matches_df_copy.empty:
         for index, ses_id in new_matches_df_copy["ses_id"].items():
             session = client.get_session(ses_id)
             session.add_tag("email")
@@ -341,14 +347,15 @@ def main():
     just_rc_df = create_just_rc_df(redcap_project)
 
     log.info("Sending emails to admin...")
-    send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, "admin")
+    send_wbhi_email(
+        new_matches_df, just_rc_df, just_fw_df, "admin", test_run=config["test_run"]
+    )
 
-    if not config["admin_only"]:
-        log.info("Sending emails to individual sites...")
-        for site in SITE_LIST:
-            send_wbhi_email(
-                new_matches_df, just_rc_df, just_fw_df, site, email_tag=True
-            )
+    log.info("Sending emails to individual sites...")
+    for site in SITE_LIST:
+        send_wbhi_email(
+            new_matches_df, just_rc_df, just_fw_df, site, test_run=config["test_run"]
+        )
 
 
 if __name__ == "__main__":

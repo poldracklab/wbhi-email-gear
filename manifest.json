@@ -44,8 +44,8 @@
 			"description": "Password of gmail account to use for sending emails",
 			"type": "string"
 		},
-		"admin_only": {
-			"description": "If true, only send emails to admin users",
+		"test_run": {
+			"description": "Send all emails to admin and don't tag sessions as sent.",
 			"type": "boolean",
 			"default": false
 		}
