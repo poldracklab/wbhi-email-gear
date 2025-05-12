@@ -280,21 +280,18 @@ def send_wbhi_email(
         if not just_fw_df_copy.empty:
             just_fw_df_copy = just_fw_df_copy[just_fw_df_copy["site"] == site]
 
-    new_matches_html = new_matches_df_copy.to_html(index=False, na_rep="")
-    just_rc_html = just_rc_df_copy.to_html(index=False, na_rep="")
-    just_fw_html = just_fw_df_copy.to_html(index=False, na_rep="")
+    to_kwargs = {"index": False, "na_rep": ""}
+    new_matches_html = new_matches_df_copy.to_html(**to_kwargs)
+    just_rc_html = just_rc_df_copy.to_html(**to_kwargs)
+    just_fw_html = just_fw_df_copy.to_html(**to_kwargs)
 
     csv_path = os.path.join(os.environ["FLYWHEEL"], "csv")
     if not os.path.exists(csv_path):
         os.makedirs(csv_path)
-    new_matches_df_copy.to_csv(
-        os.path.join(csv_path, "matches.csv"), index=False, na_rep=""
-    )
-    just_rc_df_copy.to_csv(
-        os.path.join(csv_path, "redcap_unmatched.csv"), index=False, na_rep=""
-    )
+    new_matches_df_copy.to_csv(os.path.join(csv_path, "matches.csv"), **to_kwargs)
+    just_rc_df_copy.to_csv(os.path.join(csv_path, "redcap_unmatched.csv"), **to_kwargs)
     just_fw_df_copy.to_csv(
-        os.path.join(csv_path, "flywheel_unmatched.csv"), index=False, na_rep=""
+        os.path.join(csv_path, "flywheel_unmatched.csv"), **to_kwargs
     )
 
     html_content = f"""
