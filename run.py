@@ -80,14 +80,14 @@ def create_view_df(container, columns: tuple, filter=None) -> pd.DataFrame:
 
 
 def create_first_dcm_df(dcm_df: pd.DataFrame) -> pd.DataFrame:
-    # Sort and drop duplicates to get first file from each session
+    """Return a df containing the first file from each session in dcm_df."""
     first_df = dcm_df.copy()
     first_df = first_df.sort_values(by=["session.id", "file.created"])
     return first_df.drop_duplicates(subset="session.id")
 
 
 def get_acq_or_file_path(container) -> str:
-    """Takes a container and returns its path."""
+    """Take a container and return its path."""
     project_label = client.get_project(container.parents.project).label
     sub_label = client.get_subject(container.parents.subject).label
     ses_label = client.get_session(container.parents.session).label
@@ -100,7 +100,7 @@ def get_acq_or_file_path(container) -> str:
 
 
 def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
-    """Get relevant fields from dicom header of an acquisition"""
+    """Get relevant fields from dicom header of an acquisition."""
     # Reload the dicom file to ensure dicom header is loaded
     dicom = dicom.reload()
     dcm = get_acq_or_file_path(dicom)
@@ -140,6 +140,7 @@ def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
 
 
 def create_new_matches_df() -> pd.DataFrame:
+    """Return a df containing new matches since the last email was sent."""
     pre_deid_project = client.lookup("wbhi/pre-deid")
     filter = "session.tags!=email,file.type=dicom"
     dcm_df = create_view_df(pre_deid_project, DATAVIEW_COLUMNS, filter)
@@ -161,6 +162,7 @@ def create_new_matches_df() -> pd.DataFrame:
 
 
 def create_just_fw_df() -> pd.DataFrame:
+    """Return a df containing unmatched flywheel sessions."""
     today = datetime.today()
     hdr_list = []
     for site in SITE_LIST:
@@ -190,6 +192,7 @@ def create_just_fw_df() -> pd.DataFrame:
 
 
 def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
+    """Return a df containing unmatched redcap records."""
     # Since there's no way to reset a field to '', occassionally rid will be ' '
     # if it's value was deleted. Thus, we need to check for both cases.
     filter_logic = "[rid] = '' or [rid] = ' '"
@@ -239,7 +242,8 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     return pd.DataFrame(just_rc_list).sort_values("date")
 
 
-def send_email(subject, html_content, sender, recipients, password, files=None):
+def send_email(subject, html_content, sender, recipients, password, files=None) -> None:
+    """Send an email containing html content."""
     msg = MIMEMultipart()
     msg["Subject"] = subject
     msg["From"] = sender
@@ -266,6 +270,7 @@ def send_wbhi_email(
     site: str,
     test_run=False,
 ) -> None:
+    """Send wbhi email updated to sites and/or admins."""
     new_matches_df_copy = new_matches_df.copy()
     just_rc_df_copy = just_rc_df.copy()
     just_fw_df_copy = just_fw_df.copy()
