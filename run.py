@@ -15,9 +15,10 @@ from redcap import Project
 from flywheel import FileListOutput
 
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
-from wbhiutils import parse_dicom_hdr
-from wbhiutils.constants import (
+from wbhiutils import parse_dicom_hdr  # noqa: E402
+from wbhiutils.constants import (  # noqa: E402
     EMAIL_DICT,
+    ADMIN_EMAIL,
     REDCAP_API_URL,
     REDCAP_KEY,
     SITE_KEY_REVERSE,
@@ -100,57 +101,57 @@ def get_acq_or_file_path(container) -> str:
 
 def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
     """Get relevant fields from dicom header of an acquisition"""
+    # Reload the dicom file to ensure dicom header is loaded
+    dicom = dicom.reload()
+    dcm = get_acq_or_file_path(dicom)
 
     if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.error(
-            f"File-classifier gear has not been run on {get_acq_or_file_path(dicom)}"
-        )
+        log.error("File-classifier gear has not been run on %s", dcm)
         return {"error": "FILE_CLASSIFIER_NOT_RUN"}
 
-    dcm_hdr = dicom.reload().info["header"]["dicom"]
-    hdr_fields = {"error": None, "site": site, "ses_id": dicom.parents.session}
+    dcm_hdr = dicom.info["header"]["dicom"]
+    meta = {"error": None, "site": site, "ses_id": dicom.parents.session}
 
-    for key, function in DICOM_FUNCTION_DICT.items():
-        try:
-            hdr_fields[key] = function(dcm_hdr, site)
-        except (KeyError, ValueError, AttributeError):
-            hdr_fields[key] = None
-            log.error(f"{get_acq_or_file_path(dicom)} is missing {key}.")
-            hdr_fields["error"] = "MISSING_DICOM_FIELDS"
-        except ValueError:
-            hdr_fields[key] = None
-            log.error(f"{key} in {get_acq_or_file_path(dicom)} failed to parse.")
-            hdr_fields["error"] = "DICOM_FIELDS_PARSE_ERROR"
+    try:
+        meta["pi_id"] = parse_dicom_hdr.parse_pi(dcm_hdr, site).casefold()
+    except (KeyError, ValueError):
+        log.debug("%s problem fetching PI ID", dcm)
+        meta["error"] = "MISSING_DICOM_FIELDS"
 
-    return hdr_fields
+    try:
+        meta["sub_id"] = parse_dicom_hdr.parse_sub(dcm_hdr, site).casefold()
+    except KeyError:
+        log.debug("%s problem fetching SUB ID", dcm)
+        meta["error"] = "MISSING_DICOM_FIELDS"
 
+    try:
+        meta["date"] = datetime.strptime(dcm_hdr["StudyDate"], DATE_FORMAT_FW)
+    except KeyError:
+        log.debug("%s problem fetching DATE", dcm)
+        meta["error"] = "MISSING_DICOM_FIELDS"
 
-def get_modalities(dicom: FileListOutput) -> str:
-    if "file-classifier" not in dicom.tags or "header" not in dicom.info:
-        log.error(
-            f"File-classifier gear has not been run on {get_acq_or_file_path(acq)}"
-        )
-        return {"error": "FILE_CLASSIFIER_NOT_RUN"}
+    try:
+        meta["am_pm"] = "am" if float(dcm_hdr["StudyTime"]) < 120000 else "pm"
+    except KeyError:
+        log.debug("%s problem fetching AM/PM", dcm)
+        meta["error"] = "MISSING_DICOM_FIELDS"
 
-    dcm_hdr = dicom.reload().info["header"]["dicom"]
+    return meta
 
 
 def create_new_matches_df() -> pd.DataFrame:
-    deid_project = client.lookup("wbhi/pre-deid")
-    # deid_project = client.lookup("joe_test/deid_joe")
+    pre_deid_project = client.lookup("wbhi/pre-deid")
     filter = "session.tags!=email,file.type=dicom"
-    dcm_df = create_view_df(deid_project, DATAVIEW_COLUMNS, filter)
+    dcm_df = create_view_df(pre_deid_project, DATAVIEW_COLUMNS, filter)
     if dcm_df.empty:
         return dcm_df
     first_dcm_df = create_first_dcm_df(dcm_df)
 
     hdr_list = []
     for index, row in first_dcm_df.iterrows():
-        dcm = client.get_file(row["file.file_id"])
+        dicom = client.get_file(row["file.file_id"])
         site = SITE_KEY_REVERSE[row["subject.label"][0]]
-        hdr_fields = get_hdr_fields(dcm, site)
-        # modalities = get_modalities()
-
+        hdr_fields = get_hdr_fields(dicom, site)
         hdr_list.append(hdr_fields)
 
     hdr_df = pd.DataFrame(hdr_list)
@@ -175,7 +176,7 @@ def create_just_fw_df() -> pd.DataFrame:
             hdr_fields = get_hdr_fields(file, site)
             if hdr_fields["error"] == "FILE_CLASSIFIER_NOT_RUN":
                 continue
-            if hdr_fields["date"]:
+            if "date" in hdr_fields:
                 delta = today - hdr_fields["date"]
                 if delta >= timedelta(days=2):
                     hdr_list.append(hdr_fields)
@@ -196,21 +197,18 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     just_rc_list = []
 
     for record in redcap_data:
-        site = record.get("site")
         redcap_id = record.get("participant_id")
-        if not site:
-            log.error("Record number %s is missing 'site'" % redcap_id)
-            continue
-        if site not in SITE_LIST:
-            log.debug("%s not in %s", site, SITE_LIST)
-            continue
+        site = record.get("site")
 
-        mri_pi_field = f"mri_pi_{site}"
-        # Some labels may be empty strings
-        if record[mri_pi_field] != "99":
-            pi_id = record[mri_pi_field].casefold()
+        if site:
+            mri_pi_field = f"mri_pi_{site}"
+            # Some labels may be empty strings
+            if record[mri_pi_field] != "99":
+                pi_id = record[mri_pi_field].casefold()
+            else:
+                pi_id = record[f"{mri_pi_field}_other"].casefold()
         else:
-            pi_id = record[f"{mri_pi_field}_other"].casefold()
+            pi_id = None
 
         record_dict = {
             "site": site,
@@ -266,7 +264,7 @@ def send_wbhi_email(
     just_rc_df: pd.DataFrame,
     just_fw_df: pd.DataFrame,
     site: str,
-    email_tag=False,
+    test_run=False,
 ) -> None:
     new_matches_df_copy = new_matches_df.copy()
     just_rc_df_copy = just_rc_df.copy()
@@ -282,17 +280,18 @@ def send_wbhi_email(
         if not just_fw_df_copy.empty:
             just_fw_df_copy = just_fw_df_copy[just_fw_df_copy["site"] == site]
 
-    new_matches_html = new_matches_df_copy.to_html(index=False)
-    just_rc_html = just_rc_df_copy.to_html(index=False)
-    just_fw_html = just_fw_df_copy.to_html(index=False)
+    to_kwargs = {"index": False, "na_rep": ""}
+    new_matches_html = new_matches_df_copy.to_html(**to_kwargs)
+    just_rc_html = just_rc_df_copy.to_html(**to_kwargs)
+    just_fw_html = just_fw_df_copy.to_html(**to_kwargs)
 
     csv_path = os.path.join(os.environ["FLYWHEEL"], "csv")
     if not os.path.exists(csv_path):
         os.makedirs(csv_path)
-    new_matches_df_copy.to_csv(os.path.join(csv_path, "matches.csv"), index=False)
-    just_rc_df_copy.to_csv(os.path.join(csv_path, "redcap_unmatched.csv"), index=False)
+    new_matches_df_copy.to_csv(os.path.join(csv_path, "matches.csv"), **to_kwargs)
+    just_rc_df_copy.to_csv(os.path.join(csv_path, "redcap_unmatched.csv"), **to_kwargs)
     just_fw_df_copy.to_csv(
-        os.path.join(csv_path, "flywheel_unmatched.csv"), index=False
+        os.path.join(csv_path, "flywheel_unmatched.csv"), **to_kwargs
     )
 
     html_content = f"""
@@ -313,16 +312,21 @@ def send_wbhi_email(
     """
     csv_list = ["matches.csv", "redcap_unmatched.csv", "flywheel_unmatched.csv"]
 
+    if test_run:
+        recipients = [ADMIN_EMAIL]
+    else:
+        recipients = EMAIL_DICT[site]
+
     send_email(
         "Weekly WBHI Summary",
         html_content,
         config["gmail_address"],
-        EMAIL_DICT[site],
+        recipients,
         config["gmail_password"],
         [os.path.join(csv_path, basename) for basename in csv_list],
     )
 
-    if email_tag and not new_matches_df_copy.empty:
+    if not test_run and not new_matches_df_copy.empty:
         for index, ses_id in new_matches_df_copy["ses_id"].items():
             session = client.get_session(ses_id)
             session.add_tag("email")
@@ -340,14 +344,15 @@ def main():
     just_rc_df = create_just_rc_df(redcap_project)
 
     log.info("Sending emails to admin...")
-    send_wbhi_email(new_matches_df, just_rc_df, just_fw_df, "admin")
+    send_wbhi_email(
+        new_matches_df, just_rc_df, just_fw_df, "admin", test_run=config["test_run"]
+    )
 
-    if not config["admin_only"]:
-        log.info("Sending emails to individual sites...")
-        for site in SITE_LIST:
-            send_wbhi_email(
-                new_matches_df, just_rc_df, just_fw_df, site, email_tag=True
-            )
+    log.info("Sending emails to individual sites...")
+    for site in SITE_LIST:
+        send_wbhi_email(
+            new_matches_df, just_rc_df, just_fw_df, site, test_run=config["test_run"]
+        )
 
 
 if __name__ == "__main__":
