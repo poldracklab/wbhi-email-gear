@@ -9,7 +9,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 import pandas as pd
 from redcap import Project
 from flywheel import FileListOutput
@@ -97,6 +97,20 @@ def get_acq_or_file_path(container) -> str:
     elif container.container_type == "file":
         acq_label = client.get_acquisition(container.parents.acquisition).label
         return f"{project_label}/{sub_label}/{ses_label}/{acq_label}/{container.name}/"
+
+def get_last_job_date() -> str:
+    """Returns the date of the most recent successful run of this gear."""
+    date_format = "%Y-%m-%d"
+    cutoff_date = date.today() - timedelta(days=30)
+    cutoff_date_str = cutoff_date.strftime(date_format)
+    recent_jobs = client.jobs.find(f'created>{cutoff_date_str},gear_info.name=wbhi-email,state=complete,config.config.test_run!=true')
+    if recent_jobs:
+        last_job_date = sorted([j.created for j in recent_jobs])[-1]
+        return last_job_date.strftime(date_format)
+    else:
+        # If no jobs found with 30 days, return date of one week ago
+        one_week_ago = date.today() - timedelta(days=7)
+        return one_week_ago.strftime(date_format)
 
 
 def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
@@ -242,6 +256,35 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     return pd.DataFrame(just_rc_list).sort_values("date")
 
 
+def create_failed_jobs_df() -> None:
+    """Return a df containing failed gear runs since the last email was sent."""
+    last_email_job_date = get_last_job_date()
+    failed_jobs = client.jobs.find(f'created>{last_email_job_date},state=failed')
+
+    failed_jobs_dict_list = []
+    for job in failed_jobs:
+        subject = None
+        session = None
+        if 'subject' in job.parents:
+            subject = client.get_subject(job.parents.subject).label
+        if 'session' in job.parents:
+            session = client.get_session(job.parents.session).label
+
+        job_dict = {
+            'name': job.gear_info.name,
+            'id': job.id,
+            'group': job.parents.group,
+            'project': client.get_project(job.parents.project).label,
+            'subject': subject,
+            'session': session,
+            'date': job.created.date()
+        }
+
+        failed_jobs_dict_list.append(job_dict)
+
+    return pd.DataFrame(failed_jobs_dict_list).sort_values('date')
+
+
 def send_email(subject, html_content, sender, recipients, password, files=None) -> None:
     """Send an email containing html content."""
     msg = MIMEMultipart()
@@ -350,6 +393,8 @@ def main():
     new_matches_df = create_new_matches_df()
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
+
+    failed_jobs_df = create_failed_jobs_df()
 
     log.info("Sending emails to admin...")
     send_wbhi_email(
