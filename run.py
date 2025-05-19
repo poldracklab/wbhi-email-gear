@@ -12,7 +12,7 @@ from email.mime.application import MIMEApplication
 from datetime import datetime, date, timedelta
 import pandas as pd
 from redcap import Project
-from flywheel import FileListOutput
+from flywheel import FileListOutput, ProjectOutput
 
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
 from wbhiutils import parse_dicom_hdr  # noqa: E402
@@ -38,10 +38,6 @@ DATAVIEW_COLUMNS = (
     "file.type",
     "file.created",
     "acquisition.label",
-    "file.classification.Intent",
-    "file.classification.Features",
-    "file.classification.Measurement",
-    "file.classification.Custom",
 )
 
 DICOM_FUNCTION_DICT = {
@@ -56,7 +52,9 @@ DICOM_FUNCTION_DICT = {
 }
 
 
-def create_view_df(container, columns: tuple, filter=None) -> pd.DataFrame:
+def create_view_df(
+    container, columns: tuple, filter=None, container_type="acquisition"
+) -> pd.DataFrame:
     """Get unique labels for all acquisitions in the container.
 
     This is done using a single Data View which is more efficient than iterating through
@@ -64,7 +62,7 @@ def create_view_df(container, columns: tuple, filter=None) -> pd.DataFrame:
     """
 
     builder = flywheel.ViewBuilder(
-        container="acquisition",
+        container=container_type,
         filename="*.*",
         match="all",
         filter=filter,
@@ -98,12 +96,15 @@ def get_acq_or_file_path(container) -> str:
         acq_label = client.get_acquisition(container.parents.acquisition).label
         return f"{project_label}/{sub_label}/{ses_label}/{acq_label}/{container.name}/"
 
+
 def get_last_job_date() -> str:
     """Returns the date of the most recent successful run of this gear."""
     date_format = "%Y-%m-%d"
     cutoff_date = date.today() - timedelta(days=30)
     cutoff_date_str = cutoff_date.strftime(date_format)
-    recent_jobs = client.jobs.find(f'created>{cutoff_date_str},gear_info.name=wbhi-email,state=complete,config.config.test_run!=true')
+    recent_jobs = client.jobs.find(
+        f"created>{cutoff_date_str},gear_info.name=wbhi-email,state=complete,config.config.test_run!=true"
+    )
     if recent_jobs:
         last_job_date = sorted([j.created for j in recent_jobs])[-1]
         return last_job_date.strftime(date_format)
@@ -153,9 +154,8 @@ def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
     return meta
 
 
-def create_new_matches_df() -> pd.DataFrame:
+def create_new_matches_df(pre_deid_project: ProjectOutput) -> pd.DataFrame:
     """Return a df containing new matches since the last email was sent."""
-    pre_deid_project = client.lookup("wbhi/pre-deid")
     filter = "session.tags!=email,file.type=dicom"
     dcm_df = create_view_df(pre_deid_project, DATAVIEW_COLUMNS, filter)
     if dcm_df.empty:
@@ -256,7 +256,7 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     return pd.DataFrame(just_rc_list).sort_values("date")
 
 
-def create_failed_jobs_df() -> None:
+def create_failed_jobs_df() -> pd.DataFrame():
     """Return a df containing failed gear runs since the last email was sent."""
     last_email_job_date = get_last_job_date()
     failed_jobs = client.jobs.find(f'created>{last_email_job_date},state=failed')
@@ -283,6 +283,18 @@ def create_failed_jobs_df() -> None:
         failed_jobs_dict_list.append(job_dict)
 
     return pd.DataFrame(failed_jobs_dict_list).sort_values('date')
+
+
+def create_long_interval_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
+    """Return a df of all sessions in wbhi/pre-deid containing the tag 'long-redcap-interval_unsent'."""
+    long_interval_df = create_view_df(
+        pre_deid_project,
+        ["session.id"],
+        filter="session.tags=long-redcap-interval_unsent",
+        container_type="session",
+    )
+    long_interval_df = long_interval_df.rename(columns={"session.id":"ses_id"})
+    return long_interval_df.drop("errors", axis=1)
 
 
 def send_email(subject, html_content, sender, recipients, password, files=None) -> None:
@@ -389,12 +401,14 @@ def main():
 
     redcap_api_key = config["redcap_api_key"]
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
+    pre_deid_project = client.lookup("wbhi/pre-deid")
 
-    new_matches_df = create_new_matches_df()
+    new_matches_df = create_new_matches_df(pre_deid_project)
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
 
     failed_jobs_df = create_failed_jobs_df()
+    long_interval_df = create_long_interval_df(pre_deid_project)
 
     log.info("Sending emails to admin...")
     send_wbhi_email(
