@@ -326,10 +326,13 @@ def send_wbhi_email(
         [os.path.join(csv_path, basename) for basename in csv_list],
     )
 
-    if not test_run and not new_matches_df_copy.empty:
+    if site != "admin" and not test_run and not new_matches_df_copy.empty:
         for index, ses_id in new_matches_df_copy["ses_id"].items():
             session = client.get_session(ses_id)
-            session.add_tag("email")
+            if "email" not in session.tags:
+                session.add_tag("email")
+            else:
+                log.error("Session %s already has an 'email' tag.", session.id)
 
 
 def main():
