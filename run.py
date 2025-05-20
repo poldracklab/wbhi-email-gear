@@ -265,9 +265,9 @@ def create_failed_jobs_df() -> pd.DataFrame():
     for job in failed_jobs:
         subject = None
         session = None
-        if 'subject' in job.parents:
+        if job.parents.subject:
             subject = client.get_subject(job.parents.subject).label
-        if 'session' in job.parents:
+        if job.parents.session:
             session = client.get_session(job.parents.session).label
 
         job_dict = {
