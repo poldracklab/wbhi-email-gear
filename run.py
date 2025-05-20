@@ -297,6 +297,25 @@ def create_long_interval_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
     return long_interval_df.drop("errors", axis=1)
 
 
+def create_software_mismatch_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
+    """Return a df of all sessions in wbhi/pre-deid and <site>/Inbound data containing
+    the tag 'software-mismatch_unsent'"""
+    projects = [client.lookup(f'{site}/Inbound data') for site in SITE_LIST]
+    projects.append(pre_deid_project)
+    df_list = []
+    for project in projects:
+        df = create_view_df(
+            project,
+            ["session.id"],
+            filter="session.tags=software-mismatch_unsent",
+            container_type="session"
+        )
+        df_list.append(df)
+    software_mismatch_df = pd.concat(df_list)
+    software_mismatch_df = software_mismatch_df.rename(columns={"session.id":"ses_id"})
+    return software_mismatch_df.drop("errors", axis=1)
+
+
 def send_email(subject, html_content, sender, recipients, password, files=None) -> None:
     """Send an email containing html content."""
     msg = MIMEMultipart()
@@ -409,6 +428,7 @@ def main():
 
     failed_jobs_df = create_failed_jobs_df()
     long_interval_df = create_long_interval_df(pre_deid_project)
+    software_mismatch_df = create_software_mismatch_df(pre_deid_project)
 
     log.info("Sending emails to admin...")
     send_wbhi_email(
