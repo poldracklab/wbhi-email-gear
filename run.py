@@ -326,6 +326,20 @@ def create_software_mismatch_df(pre_deid_project: ProjectOutput) -> pd.DataFrame
     return software_mismatch_df
 
 
+def update_tags(ses_id_df: pd.DataFrame(), old_tag: str, new_tag: str) -> None:
+    """Takes a df containg session IDs and replaces each session's tag with a new tag."""
+    for ses_id in ses_id_df['ses_id']:
+        session = client.get_session(ses_id)
+        if old_tag in session.tags:
+            session.delete_tag(old_tag)
+        else:
+            log.warning('Session %s did not contain the tag %s', ses_id, old_tag)
+        if new_tag not in session.tags:
+            session.add_tag(new_tag)
+        else:
+            log.warning('Session %s already contains the tag %s', ses_id, new_tag)
+
+
 def send_email(subject, html_content, sender, recipients, password, files=None) -> None:
     """Send an email containing html content."""
     msg = MIMEMultipart()
@@ -497,6 +511,12 @@ def main():
         send_wbhi_email(
             new_matches_df, just_rc_df, just_fw_df, site, test_run=config["test_run"]
         )
+    
+    if not long_interval_df.empty:
+        update_tags(long_interval_df, 'long-redcap-interval_unsent', 'long-redcap-interval')
+    if not software_mismatch_df.empty:
+        update_tags(software_mismatch_df, 'software-mismatch_unsent', 'software-mismatch')
+
 
 
 if __name__ == "__main__":
