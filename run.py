@@ -282,7 +282,11 @@ def create_failed_jobs_df() -> pd.DataFrame():
 
         failed_jobs_dict_list.append(job_dict)
 
-    return pd.DataFrame(failed_jobs_dict_list).sort_values('date')
+    failed_jobs_df = pd.DataFrame(failed_jobs_dict_list)
+    if not failed_jobs_df.empty:
+        failed_jobs_df = failed_jobs_df.sort_values('date')
+    return failed_jobs_df
+
 
 
 def create_long_interval_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
@@ -293,8 +297,11 @@ def create_long_interval_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
         filter="session.tags=long-redcap-interval_unsent",
         container_type="session",
     )
-    long_interval_df = long_interval_df.rename(columns={"session.id":"ses_id"})
-    return long_interval_df.drop("errors", axis=1)
+
+    if not long_interval_df.empty:
+        long_interval_df = long_interval_df.rename(columns={"session.id":"ses_id"})
+        long_interval_df = long_interval_df.drop("errors", axis=1)
+    return long_interval_df
 
 
 def create_software_mismatch_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
@@ -311,9 +318,12 @@ def create_software_mismatch_df(pre_deid_project: ProjectOutput) -> pd.DataFrame
             container_type="session"
         )
         df_list.append(df)
+    
     software_mismatch_df = pd.concat(df_list)
-    software_mismatch_df = software_mismatch_df.rename(columns={"session.id":"ses_id"})
-    return software_mismatch_df.drop("errors", axis=1)
+    if not software_mismatch_df.empty:
+        software_mismatch_df = software_mismatch_df.rename(columns={"session.id":"ses_id"})
+        software_mismatch_df = software_mismatch_df.drop("errors", axis=1)
+    return software_mismatch_df
 
 
 def send_email(subject, html_content, sender, recipients, password, files=None) -> None:
@@ -337,12 +347,48 @@ def send_email(subject, html_content, sender, recipients, password, files=None) 
     log.info(f"Email sent to {recipients}")
 
 
+def create_admin_html(
+    failed_jobs_df: pd.DataFrame,
+    long_interval_df: pd.DataFrame,
+    software_mismatch_df: pd.DataFrame,
+) -> pd.DataFrame:
+    admin_html = ''
+    to_kwargs = {"index": False, "na_rep": ""}
+    if not failed_jobs_df.empty:
+        failed_jobs_df_html = failed_jobs_df.to_html(**to_kwargs)
+        failed_jobs_html = f"""
+        <p>The following jobs failed: </p>
+        {failed_jobs_df_html}
+        <br><br>
+        """
+        admin_html += failed_jobs_html
+    if not long_interval_df.empty:
+        long_interval_df_html = long_interval_df.to_html(**to_kwargs)
+        long_interval_html = f"""
+        <p>The following sessions had a redcap-flywheel interval > 2 weeks: </p>
+        {long_interval_df_html}
+        <br><br>
+        """
+        admin_html += long_interval_html
+    if not software_mismatch_df.empty:
+        software_mismatch_df_html = software_mismatch_df.to_html(**to_kwargs)
+        software_mismatch_html = f"""
+        <p>The following sessions had a software mismatch: </p>
+        {software_mismatch_df_html}
+        <br><br>
+        """
+        admin_html += software_mismatch_html
+    return admin_html
+
+
+
 def send_wbhi_email(
     new_matches_df: pd.DataFrame,
     just_rc_df: pd.DataFrame,
     just_fw_df: pd.DataFrame,
     site: str,
     test_run=False,
+    admin_html=''
 ) -> None:
     """Send wbhi email updated to sites and/or admins."""
     new_matches_df_copy = new_matches_df.copy()
@@ -386,6 +432,7 @@ def send_wbhi_email(
         <p>Flywheel sessions that didn't match any REDCap records:</p>
         {just_fw_html}
         <br><br>
+        {admin_html}
         <p>Best,</p>
         <p>WBHI Team</p>
     """
@@ -425,14 +472,24 @@ def main():
     new_matches_df = create_new_matches_df(pre_deid_project)
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
-
+    
     failed_jobs_df = create_failed_jobs_df()
     long_interval_df = create_long_interval_df(pre_deid_project)
     software_mismatch_df = create_software_mismatch_df(pre_deid_project)
 
     log.info("Sending emails to admin...")
+    admin_html = create_admin_html(
+        failed_jobs_df,
+        long_interval_df,
+        software_mismatch_df
+    )
     send_wbhi_email(
-        new_matches_df, just_rc_df, just_fw_df, "admin", test_run=config["test_run"]
+        new_matches_df,
+        just_rc_df,
+        just_fw_df,
+        "admin",
+        test_run=config["test_run"],
+        admin_html=admin_html
     )
 
     log.info("Sending emails to individual sites...")
