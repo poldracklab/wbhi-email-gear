@@ -9,10 +9,10 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 import pandas as pd
 from redcap import Project
-from flywheel import FileListOutput
+from flywheel import FileListOutput, ProjectOutput
 
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
 from wbhiutils import parse_dicom_hdr  # noqa: E402
@@ -38,10 +38,6 @@ DATAVIEW_COLUMNS = (
     "file.type",
     "file.created",
     "acquisition.label",
-    "file.classification.Intent",
-    "file.classification.Features",
-    "file.classification.Measurement",
-    "file.classification.Custom",
 )
 
 DICOM_FUNCTION_DICT = {
@@ -56,7 +52,9 @@ DICOM_FUNCTION_DICT = {
 }
 
 
-def create_view_df(container, columns: tuple, filter=None) -> pd.DataFrame:
+def create_view_df(
+    container, columns: tuple, filter=None, container_type="acquisition"
+) -> pd.DataFrame:
     """Get unique labels for all acquisitions in the container.
 
     This is done using a single Data View which is more efficient than iterating through
@@ -64,7 +62,7 @@ def create_view_df(container, columns: tuple, filter=None) -> pd.DataFrame:
     """
 
     builder = flywheel.ViewBuilder(
-        container="acquisition",
+        container=container_type,
         filename="*.*",
         match="all",
         filter=filter,
@@ -80,14 +78,14 @@ def create_view_df(container, columns: tuple, filter=None) -> pd.DataFrame:
 
 
 def create_first_dcm_df(dcm_df: pd.DataFrame) -> pd.DataFrame:
-    # Sort and drop duplicates to get first file from each session
+    """Return a df containing the first file from each session in dcm_df."""
     first_df = dcm_df.copy()
     first_df = first_df.sort_values(by=["session.id", "file.created"])
     return first_df.drop_duplicates(subset="session.id")
 
 
 def get_acq_or_file_path(container) -> str:
-    """Takes a container and returns its path."""
+    """Take a container and return its path."""
     project_label = client.get_project(container.parents.project).label
     sub_label = client.get_subject(container.parents.subject).label
     ses_label = client.get_session(container.parents.session).label
@@ -99,8 +97,25 @@ def get_acq_or_file_path(container) -> str:
         return f"{project_label}/{sub_label}/{ses_label}/{acq_label}/{container.name}/"
 
 
+def get_last_job_date() -> str:
+    """Returns the date of the most recent successful run of this gear."""
+    date_format = "%Y-%m-%d"
+    cutoff_date = date.today() - timedelta(days=30)
+    cutoff_date_str = cutoff_date.strftime(date_format)
+    recent_jobs = client.jobs.find(
+        f"created>{cutoff_date_str},gear_info.name=wbhi-email,state=complete,config.config.test_run!=true"
+    )
+    if recent_jobs:
+        last_job_date = sorted([j.created for j in recent_jobs])[-1]
+        return last_job_date.strftime(date_format)
+    else:
+        # If no jobs found with 30 days, return date of one week ago
+        one_week_ago = date.today() - timedelta(days=7)
+        return one_week_ago.strftime(date_format)
+
+
 def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
-    """Get relevant fields from dicom header of an acquisition"""
+    """Get relevant fields from dicom header of an acquisition."""
     # Reload the dicom file to ensure dicom header is loaded
     dicom = dicom.reload()
     dcm = get_acq_or_file_path(dicom)
@@ -139,8 +154,8 @@ def get_hdr_fields(dicom: FileListOutput, site: str) -> dict:
     return meta
 
 
-def create_new_matches_df() -> pd.DataFrame:
-    pre_deid_project = client.lookup("wbhi/pre-deid")
+def create_new_matches_df(pre_deid_project: ProjectOutput) -> pd.DataFrame:
+    """Return a df containing new matches since the last email was sent."""
     filter = "session.tags!=email,file.type=dicom"
     dcm_df = create_view_df(pre_deid_project, DATAVIEW_COLUMNS, filter)
     if dcm_df.empty:
@@ -161,6 +176,7 @@ def create_new_matches_df() -> pd.DataFrame:
 
 
 def create_just_fw_df() -> pd.DataFrame:
+    """Return a df containing unmatched flywheel sessions."""
     today = datetime.today()
     hdr_list = []
     for site in SITE_LIST:
@@ -190,6 +206,7 @@ def create_just_fw_df() -> pd.DataFrame:
 
 
 def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
+    """Return a df containing unmatched redcap records."""
     # Since there's no way to reset a field to '', occassionally rid will be ' '
     # if it's value was deleted. Thus, we need to check for both cases.
     filter_logic = "[rid] = '' or [rid] = ' '"
@@ -239,7 +256,92 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     return pd.DataFrame(just_rc_list).sort_values("date")
 
 
-def send_email(subject, html_content, sender, recipients, password, files=None):
+def create_failed_jobs_df() -> pd.DataFrame():
+    """Return a df containing failed gear runs since the last email was sent."""
+    last_email_job_date = get_last_job_date()
+    failed_jobs = client.jobs.find(f'created>{last_email_job_date},state=failed')
+
+    failed_jobs_dict_list = []
+    for job in failed_jobs:
+        subject = None
+        session = None
+        if job.parents.subject:
+            subject = client.get_subject(job.parents.subject).label
+        if job.parents.session:
+            session = client.get_session(job.parents.session).label
+
+        job_dict = {
+            'name': job.gear_info.name,
+            'id': job.id,
+            'group': job.parents.group,
+            'project': client.get_project(job.parents.project).label,
+            'subject': subject,
+            'session': session,
+            'date': job.created.date()
+        }
+
+        failed_jobs_dict_list.append(job_dict)
+
+    failed_jobs_df = pd.DataFrame(failed_jobs_dict_list)
+    if not failed_jobs_df.empty:
+        failed_jobs_df = failed_jobs_df.sort_values('date')
+    return failed_jobs_df
+
+
+
+def create_long_interval_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
+    """Return a df of all sessions in wbhi/pre-deid containing the tag 'long-redcap-interval_unsent'."""
+    long_interval_df = create_view_df(
+        pre_deid_project,
+        ["session.id"],
+        filter="session.tags=long-redcap-interval_unsent",
+        container_type="session",
+    )
+
+    if not long_interval_df.empty:
+        long_interval_df = long_interval_df.rename(columns={"session.id":"ses_id"})
+        long_interval_df = long_interval_df.drop("errors", axis=1)
+    return long_interval_df
+
+
+def create_software_mismatch_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
+    """Return a df of all sessions in wbhi/pre-deid and <site>/Inbound data containing
+    the tag 'software-mismatch_unsent'"""
+    projects = [client.lookup(f'{site}/Inbound data') for site in SITE_LIST]
+    projects.append(pre_deid_project)
+    df_list = []
+    for project in projects:
+        df = create_view_df(
+            project,
+            ["session.id"],
+            filter="session.tags=software-mismatch_unsent",
+            container_type="session"
+        )
+        df_list.append(df)
+    
+    software_mismatch_df = pd.concat(df_list)
+    if not software_mismatch_df.empty:
+        software_mismatch_df = software_mismatch_df.rename(columns={"session.id":"ses_id"})
+        software_mismatch_df = software_mismatch_df.drop("errors", axis=1)
+    return software_mismatch_df
+
+
+def update_tags(ses_id_df: pd.DataFrame(), old_tag: str, new_tag: str) -> None:
+    """Takes a df containg session IDs and replaces each session's tag with a new tag."""
+    for ses_id in ses_id_df['ses_id']:
+        session = client.get_session(ses_id)
+        if old_tag in session.tags:
+            session.delete_tag(old_tag)
+        else:
+            log.warning('Session %s did not contain the tag %s', ses_id, old_tag)
+        if new_tag not in session.tags:
+            session.add_tag(new_tag)
+        else:
+            log.warning('Session %s already contains the tag %s', ses_id, new_tag)
+
+
+def send_email(subject, html_content, sender, recipients, password, files=None) -> None:
+    """Send an email containing html content."""
     msg = MIMEMultipart()
     msg["Subject"] = subject
     msg["From"] = sender
@@ -259,13 +361,50 @@ def send_email(subject, html_content, sender, recipients, password, files=None):
     log.info(f"Email sent to {recipients}")
 
 
+def create_admin_html(
+    failed_jobs_df: pd.DataFrame,
+    long_interval_df: pd.DataFrame,
+    software_mismatch_df: pd.DataFrame,
+) -> pd.DataFrame:
+    admin_html = ''
+    to_kwargs = {"index": False, "na_rep": ""}
+    if not failed_jobs_df.empty:
+        failed_jobs_df_html = failed_jobs_df.to_html(**to_kwargs)
+        failed_jobs_html = f"""
+        <p>The following jobs failed: </p>
+        {failed_jobs_df_html}
+        <br><br>
+        """
+        admin_html += failed_jobs_html
+    if not long_interval_df.empty:
+        long_interval_df_html = long_interval_df.to_html(**to_kwargs)
+        long_interval_html = f"""
+        <p>The following sessions had a redcap-flywheel interval > 2 weeks: </p>
+        {long_interval_df_html}
+        <br><br>
+        """
+        admin_html += long_interval_html
+    if not software_mismatch_df.empty:
+        software_mismatch_df_html = software_mismatch_df.to_html(**to_kwargs)
+        software_mismatch_html = f"""
+        <p>The following sessions had a software mismatch: </p>
+        {software_mismatch_df_html}
+        <br><br>
+        """
+        admin_html += software_mismatch_html
+    return admin_html
+
+
+
 def send_wbhi_email(
     new_matches_df: pd.DataFrame,
     just_rc_df: pd.DataFrame,
     just_fw_df: pd.DataFrame,
     site: str,
     test_run=False,
+    admin_html=''
 ) -> None:
+    """Send wbhi email updated to sites and/or admins."""
     new_matches_df_copy = new_matches_df.copy()
     just_rc_df_copy = just_rc_df.copy()
     just_fw_df_copy = just_fw_df.copy()
@@ -307,6 +446,7 @@ def send_wbhi_email(
         <p>Flywheel sessions that didn't match any REDCap records:</p>
         {just_fw_html}
         <br><br>
+        {admin_html}
         <p>Best,</p>
         <p>WBHI Team</p>
     """
@@ -341,14 +481,29 @@ def main():
 
     redcap_api_key = config["redcap_api_key"]
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
+    pre_deid_project = client.lookup("wbhi/pre-deid")
 
-    new_matches_df = create_new_matches_df()
+    new_matches_df = create_new_matches_df(pre_deid_project)
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
+    
+    failed_jobs_df = create_failed_jobs_df()
+    long_interval_df = create_long_interval_df(pre_deid_project)
+    software_mismatch_df = create_software_mismatch_df(pre_deid_project)
 
     log.info("Sending emails to admin...")
+    admin_html = create_admin_html(
+        failed_jobs_df,
+        long_interval_df,
+        software_mismatch_df
+    )
     send_wbhi_email(
-        new_matches_df, just_rc_df, just_fw_df, "admin", test_run=config["test_run"]
+        new_matches_df,
+        just_rc_df,
+        just_fw_df,
+        "admin",
+        test_run=config["test_run"],
+        admin_html=admin_html
     )
 
     log.info("Sending emails to individual sites...")
@@ -356,6 +511,12 @@ def main():
         send_wbhi_email(
             new_matches_df, just_rc_df, just_fw_df, site, test_run=config["test_run"]
         )
+    
+    if not long_interval_df.empty:
+        update_tags(long_interval_df, 'long-redcap-interval_unsent', 'long-redcap-interval')
+    if not software_mismatch_df.empty:
+        update_tags(software_mismatch_df, 'software-mismatch_unsent', 'software-mismatch')
+
 
 
 if __name__ == "__main__":
