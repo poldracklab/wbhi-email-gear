@@ -171,8 +171,11 @@ def create_new_matches_df(pre_deid_project: ProjectOutput) -> pd.DataFrame:
 
     hdr_df = pd.DataFrame(hdr_list)
     hdr_df = hdr_df.drop("error", axis=1)
+    
+    if not hdr_df.empty:
+        hdr_df = hdr_df.sort_values("date")
 
-    return hdr_df.sort_values("date")
+    return hdr_df
 
 
 def create_just_fw_df() -> pd.DataFrame:
@@ -202,7 +205,10 @@ def create_just_fw_df() -> pd.DataFrame:
     hdr_df = pd.DataFrame(hdr_list)
     hdr_df = hdr_df.drop("error", axis=1)
 
-    return hdr_df.sort_values("date")
+    if not hdr_df.empty:
+        hdr_df = hdr_df.sort_values("date")
+
+    return hdr_df
 
 
 def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
@@ -253,7 +259,12 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
 
         just_rc_list.append(record_dict)
 
-    return pd.DataFrame(just_rc_list).sort_values("date")
+    just_rc_df = pd.DataFrame(just_rc_list)
+    
+    if not just_rc_df.empty:
+        just_rc_df = just_rc_df.sort_values("date")
+
+    return just_rc_df
 
 
 def create_failed_jobs_df() -> pd.DataFrame():
