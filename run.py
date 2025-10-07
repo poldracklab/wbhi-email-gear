@@ -14,7 +14,9 @@ import pandas as pd
 from redcap import Project
 from flywheel import FileListOutput, ProjectOutput
 
+
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
+
 from wbhiutils import parse_dicom_hdr  # noqa: E402
 from wbhiutils.constants import (  # noqa: E402
     EMAIL_DICT,
@@ -70,6 +72,7 @@ def create_view_df(
         include_ids=False,
         include_labels=False,
     )
+
     for c in columns:
         builder.column(src=c)
 
@@ -102,9 +105,11 @@ def get_last_job_date() -> str:
     date_format = "%Y-%m-%d"
     cutoff_date = date.today() - timedelta(days=30)
     cutoff_date_str = cutoff_date.strftime(date_format)
+
     recent_jobs = client.jobs.find(
         f"created>{cutoff_date_str},gear_info.name=wbhi-email,state=complete,config.config.test_run!=true"
     )
+
     if recent_jobs:
         last_job_date = sorted([j.created for j in recent_jobs])[-1]
         return last_job_date.strftime(date_format)
@@ -158,8 +163,10 @@ def create_new_matches_df(pre_deid_project: ProjectOutput) -> pd.DataFrame:
     """Return a df containing new matches since the last email was sent."""
     filter = "session.tags!=email,file.type=dicom"
     dcm_df = create_view_df(pre_deid_project, DATAVIEW_COLUMNS, filter)
+
     if dcm_df.empty:
         return dcm_df
+
     first_dcm_df = create_first_dcm_df(dcm_df)
 
     hdr_list = []
@@ -172,26 +179,33 @@ def create_new_matches_df(pre_deid_project: ProjectOutput) -> pd.DataFrame:
     hdr_df = pd.DataFrame(hdr_list)
     hdr_df = hdr_df.drop("error", axis=1)
 
-    return hdr_df.sort_values("date")
+    if not hdr_df.empty:
+        hdr_df = hdr_df.sort_values("date")
+
+    return hdr_df
 
 
 def create_just_fw_df() -> pd.DataFrame:
     """Return a df containing unmatched flywheel sessions."""
     today = datetime.today()
+
     hdr_list = []
     for site in SITE_LIST:
         project = client.lookup(f"{site}/Inbound Data")
         filter = "file.type=dicom"
         dcm_df = create_view_df(project, DATAVIEW_COLUMNS, filter)
         first_file_df = create_first_dcm_df(dcm_df)
+
         if first_file_df.empty:
             continue
 
         for file_id in first_file_df["file.file_id"]:
             file = client.get_file(file_id)
             hdr_fields = get_hdr_fields(file, site)
+
             if hdr_fields["error"] == "FILE_CLASSIFIER_NOT_RUN":
                 continue
+
             if "date" in hdr_fields:
                 delta = today - hdr_fields["date"]
                 if delta >= timedelta(days=2):
@@ -202,7 +216,10 @@ def create_just_fw_df() -> pd.DataFrame:
     hdr_df = pd.DataFrame(hdr_list)
     hdr_df = hdr_df.drop("error", axis=1)
 
-    return hdr_df.sort_values("date")
+    if not hdr_df.empty:
+        hdr_df = hdr_df.sort_values("date")
+
+    return hdr_df
 
 
 def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
@@ -211,8 +228,8 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     # if it's value was deleted. Thus, we need to check for both cases.
     filter_logic = "[rid] = '' or [rid] = ' '"
     redcap_data = redcap_project.export_records(filter_logic=filter_logic)
-    just_rc_list = []
 
+    just_rc_list = []
     for record in redcap_data:
         redcap_id = record.get("participant_id")
         site = record.get("site")
@@ -253,40 +270,47 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
 
         just_rc_list.append(record_dict)
 
-    return pd.DataFrame(just_rc_list).sort_values("date")
+    just_rc_df = pd.DataFrame(just_rc_list)
+
+    if not just_rc_df.empty:
+        just_rc_df = just_rc_df.sort_values("date")
+
+    return just_rc_df
 
 
 def create_failed_jobs_df() -> pd.DataFrame():
     """Return a df containing failed gear runs since the last email was sent."""
     last_email_job_date = get_last_job_date()
-    failed_jobs = client.jobs.find(f'created>{last_email_job_date},state=failed')
+    failed_jobs = client.jobs.find(f"created>{last_email_job_date},state=failed")
 
     failed_jobs_dict_list = []
     for job in failed_jobs:
         subject = None
         session = None
+
         if job.parents.subject:
             subject = client.get_subject(job.parents.subject).label
         if job.parents.session:
             session = client.get_session(job.parents.session).label
 
         job_dict = {
-            'name': job.gear_info.name,
-            'id': job.id,
-            'group': job.parents.group,
-            'project': client.get_project(job.parents.project).label,
-            'subject': subject,
-            'session': session,
-            'date': job.created.date()
+            "name": job.gear_info.name,
+            "id": job.id,
+            "group": job.parents.group,
+            "project": client.get_project(job.parents.project).label,
+            "subject": subject,
+            "session": session,
+            "date": job.created.date(),
         }
 
         failed_jobs_dict_list.append(job_dict)
 
     failed_jobs_df = pd.DataFrame(failed_jobs_dict_list)
-    if not failed_jobs_df.empty:
-        failed_jobs_df = failed_jobs_df.sort_values('date')
-    return failed_jobs_df
 
+    if not failed_jobs_df.empty:
+        failed_jobs_df = failed_jobs_df.sort_values("date")
+
+    return failed_jobs_df
 
 
 def create_long_interval_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
@@ -299,45 +323,53 @@ def create_long_interval_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
     )
 
     if not long_interval_df.empty:
-        long_interval_df = long_interval_df.rename(columns={"session.id":"ses_id"})
+        long_interval_df = long_interval_df.rename(columns={"session.id": "ses_id"})
         long_interval_df = long_interval_df.drop("errors", axis=1)
+
     return long_interval_df
 
 
 def create_software_mismatch_df(pre_deid_project: ProjectOutput) -> pd.DataFrame():
     """Return a df of all sessions in wbhi/pre-deid and <site>/Inbound data containing
     the tag 'software-mismatch_unsent'"""
-    projects = [client.lookup(f'{site}/Inbound data') for site in SITE_LIST]
+    projects = [client.lookup(f"{site}/Inbound data") for site in SITE_LIST]
     projects.append(pre_deid_project)
+
     df_list = []
     for project in projects:
         df = create_view_df(
             project,
             ["session.id"],
             filter="session.tags=software-mismatch_unsent",
-            container_type="session"
+            container_type="session",
         )
         df_list.append(df)
-    
+
     software_mismatch_df = pd.concat(df_list)
+
     if not software_mismatch_df.empty:
-        software_mismatch_df = software_mismatch_df.rename(columns={"session.id":"ses_id"})
+        software_mismatch_df = software_mismatch_df.rename(
+            columns={"session.id": "ses_id"}
+        )
         software_mismatch_df = software_mismatch_df.drop("errors", axis=1)
+
     return software_mismatch_df
 
 
 def update_tags(ses_id_df: pd.DataFrame(), old_tag: str, new_tag: str) -> None:
     """Takes a df containg session IDs and replaces each session's tag with a new tag."""
-    for ses_id in ses_id_df['ses_id']:
+    for ses_id in ses_id_df["ses_id"]:
         session = client.get_session(ses_id)
+
         if old_tag in session.tags:
             session.delete_tag(old_tag)
         else:
-            log.warning('Session %s did not contain the tag %s', ses_id, old_tag)
+            log.warning("Session %s did not contain the tag %s", ses_id, old_tag)
+
         if new_tag not in session.tags:
             session.add_tag(new_tag)
         else:
-            log.warning('Session %s already contains the tag %s', ses_id, new_tag)
+            log.warning("Session %s already contains the tag %s", ses_id, new_tag)
 
 
 def send_email(subject, html_content, sender, recipients, password, files=None) -> None:
@@ -366,8 +398,10 @@ def create_admin_html(
     long_interval_df: pd.DataFrame,
     software_mismatch_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    admin_html = ''
+    """Create html content for email to admins."""
+    admin_html = ""
     to_kwargs = {"index": False, "na_rep": ""}
+
     if not failed_jobs_df.empty:
         failed_jobs_df_html = failed_jobs_df.to_html(**to_kwargs)
         failed_jobs_html = f"""
@@ -376,6 +410,7 @@ def create_admin_html(
         <br><br>
         """
         admin_html += failed_jobs_html
+
     if not long_interval_df.empty:
         long_interval_df_html = long_interval_df.to_html(**to_kwargs)
         long_interval_html = f"""
@@ -384,6 +419,7 @@ def create_admin_html(
         <br><br>
         """
         admin_html += long_interval_html
+
     if not software_mismatch_df.empty:
         software_mismatch_df_html = software_mismatch_df.to_html(**to_kwargs)
         software_mismatch_html = f"""
@@ -392,8 +428,8 @@ def create_admin_html(
         <br><br>
         """
         admin_html += software_mismatch_html
-    return admin_html
 
+    return admin_html
 
 
 def send_wbhi_email(
@@ -402,7 +438,7 @@ def send_wbhi_email(
     just_fw_df: pd.DataFrame,
     site: str,
     test_run=False,
-    admin_html=''
+    admin_html="",
 ) -> None:
     """Send wbhi email updated to sites and/or admins."""
     new_matches_df_copy = new_matches_df.copy()
@@ -425,8 +461,10 @@ def send_wbhi_email(
     just_fw_html = just_fw_df_copy.to_html(**to_kwargs)
 
     csv_path = os.path.join(os.environ["FLYWHEEL"], "csv")
+
     if not os.path.exists(csv_path):
         os.makedirs(csv_path)
+
     new_matches_df_copy.to_csv(os.path.join(csv_path, "matches.csv"), **to_kwargs)
     just_rc_df_copy.to_csv(os.path.join(csv_path, "redcap_unmatched.csv"), **to_kwargs)
     just_fw_df_copy.to_csv(
@@ -469,6 +507,7 @@ def send_wbhi_email(
     if site != "admin" and not test_run and not new_matches_df_copy.empty:
         for index, ses_id in new_matches_df_copy["ses_id"].items():
             session = client.get_session(ses_id)
+
             if "email" not in session.tags:
                 session.add_tag("email")
             else:
@@ -486,16 +525,14 @@ def main():
     new_matches_df = create_new_matches_df(pre_deid_project)
     just_fw_df = create_just_fw_df()
     just_rc_df = create_just_rc_df(redcap_project)
-    
+
     failed_jobs_df = create_failed_jobs_df()
     long_interval_df = create_long_interval_df(pre_deid_project)
     software_mismatch_df = create_software_mismatch_df(pre_deid_project)
 
     log.info("Sending emails to admin...")
     admin_html = create_admin_html(
-        failed_jobs_df,
-        long_interval_df,
-        software_mismatch_df
+        failed_jobs_df, long_interval_df, software_mismatch_df
     )
     send_wbhi_email(
         new_matches_df,
@@ -503,7 +540,7 @@ def main():
         just_fw_df,
         "admin",
         test_run=config["test_run"],
-        admin_html=admin_html
+        admin_html=admin_html,
     )
 
     log.info("Sending emails to individual sites...")
@@ -511,12 +548,15 @@ def main():
         send_wbhi_email(
             new_matches_df, just_rc_df, just_fw_df, site, test_run=config["test_run"]
         )
-    
-    if not long_interval_df.empty:
-        update_tags(long_interval_df, 'long-redcap-interval_unsent', 'long-redcap-interval')
-    if not software_mismatch_df.empty:
-        update_tags(software_mismatch_df, 'software-mismatch_unsent', 'software-mismatch')
 
+    if not long_interval_df.empty:
+        update_tags(
+            long_interval_df, "long-redcap-interval_unsent", "long-redcap-interval"
+        )
+    if not software_mismatch_df.empty:
+        update_tags(
+            software_mismatch_df, "software-mismatch_unsent", "software-mismatch"
+        )
 
 
 if __name__ == "__main__":
