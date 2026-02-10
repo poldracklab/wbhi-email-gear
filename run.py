@@ -281,7 +281,9 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
 def create_failed_jobs_df() -> pd.DataFrame():
     """Return a df containing failed gear runs since the last email was sent."""
     last_email_job_date = get_last_job_date()
-    failed_jobs = client.jobs.find(f"created>{last_email_job_date},state=failed")
+    failed_jobs = client.jobs.find(
+        f"created>{last_email_job_date},state=failed,group!=joe_test"
+    )
 
     failed_jobs_dict_list = []
     for job in failed_jobs:
