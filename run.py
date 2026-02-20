@@ -83,7 +83,8 @@ def create_view_df(
 def create_first_dcm_df(dcm_df: pd.DataFrame) -> pd.DataFrame:
     """Return a df containing the first file from each session in dcm_df."""
     first_df = dcm_df.copy()
-    first_df = first_df.sort_values(by=["session.id", "file.created"])
+    if not first_df.empty:
+        first_df = first_df.sort_values(by=["session.id", "file.created"])
     return first_df.drop_duplicates(subset="session.id")
 
 
@@ -226,7 +227,7 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     """Return a df containing unmatched redcap records."""
     # Since there's no way to reset a field to '', occassionally rid will be ' '
     # if it's value was deleted. Thus, we need to check for both cases.
-    filter_logic = "[rid] = '' or [rid] = ' '"
+    filter_logic = "([rid] = '' or [rid]) = ' ' and [admin_archived] = '0'"
     redcap_data = redcap_project.export_records(filter_logic=filter_logic)
 
     just_rc_list = []
@@ -358,6 +359,82 @@ def create_software_mismatch_df(pre_deid_project: ProjectOutput) -> pd.DataFrame
     return software_mismatch_df
 
 
+def create_archived_fw_df() -> pd.DataFrame():
+    """Return a df of all flywheel sessions that have been archived since the last email."""
+    archived_project = client.lookup("wbhi/archived")
+    columns = [
+        "session.id",
+        "subject.label",
+        "session.label",
+        "session.timestamp",
+    ]
+    archived_fw_df = create_view_df(
+        archived_project,
+        columns,
+        filter="session.tags=archived",
+        container_type="session",
+    )
+
+    if not archived_fw_df.empty:
+        archived_fw_df = archived_fw_df.rename(
+            columns={
+                "session.id": "ses_id",
+                "subject.label": "sub_label",
+                "session.label": "ses_label",
+                "session.timestamp": "ses_timestamp",
+            }
+        )
+        archived_fw_df = archived_fw_df.drop("errors", axis=1)
+
+    return archived_fw_df
+
+
+def create_archived_rc_df(redcap_project) -> pd.DataFrame():
+    """Return a df of all redcap records that have been archivee since the last email."""
+    filter_logic = "[admin_archived] = '1' and [archived_emailed] != '1'"
+    archived_rc_list = redcap_project.export_records(filter_logic=filter_logic)
+
+    record_list = []
+    for record in archived_rc_list:
+        redcap_id = record.get("participant_id")
+        site = record.get("site")
+
+        if site:
+            mri_pi_field = f"mri_pi_{site}"
+            # Some labels may be empty strings
+            if record[mri_pi_field] != "99":
+                pi_id = record[mri_pi_field].casefold()
+            else:
+                pi_id = record[f"{mri_pi_field}_other"].casefold()
+        else:
+            pi_id = None
+
+        record_dict = {
+            "site": site,
+            "redcap_id": redcap_id,
+            "pi_id": pi_id,
+            "sub_id": record.get("mri").casefold(),
+        }
+
+        # Dates may be blank
+        try:
+            record_dict["date"] = datetime.strptime(record["mri_date"], DATE_FORMAT_RC)
+        except ValueError:
+            log.error(
+                "Could not extract date information for record number %s", redcap_id
+            )
+            record_dict["date"] = pd.NaT
+
+        record_list.append(record_dict)
+
+    archived_rc_df = pd.DataFrame(record_list)
+
+    if not archived_rc_df.empty:
+        archived_rc_df = archived_rc_df.sort_values("date")
+
+    return archived_rc_df, archived_rc_list
+
+
 def update_tags(ses_id_df: pd.DataFrame(), old_tag: str, new_tag: str) -> None:
     """Takes a df containg session IDs and replaces each session's tag with a new tag."""
     for ses_id in ses_id_df["ses_id"]:
@@ -399,6 +476,8 @@ def create_admin_html(
     failed_jobs_df: pd.DataFrame,
     long_interval_df: pd.DataFrame,
     software_mismatch_df: pd.DataFrame,
+    archived_fw_df: pd.DataFrame,
+    archived_rc_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Create html content for email to admins."""
     admin_html = ""
@@ -430,6 +509,24 @@ def create_admin_html(
         <br><br>
         """
         admin_html += software_mismatch_html
+
+    if not archived_fw_df.empty:
+        archived_fw_df_html = archived_fw_df.to_html(**to_kwargs)
+        archived_fw_html = f"""
+        <p>The following sessions have been archived due to remaining unmatched after 90 days: </p>
+        {archived_fw_df_html}
+        <br><br>
+        """
+        admin_html += archived_fw_html
+
+    if not archived_rc_df.empty:
+        archived_rc_df_html = archived_rc_df.to_html(**to_kwargs)
+        archived_rc_html = f"""
+        <p>The following REDCap records have been archived due to remaining unmatched after 90 days: </p>
+        {archived_rc_df_html}
+        <br><br>
+        """
+        admin_html += archived_rc_html
 
     return admin_html
 
@@ -532,9 +629,16 @@ def main():
     long_interval_df = create_long_interval_df(pre_deid_project)
     software_mismatch_df = create_software_mismatch_df(pre_deid_project)
 
+    archived_fw_df = create_archived_fw_df()
+    archived_rc_df, archived_rc_list = create_archived_rc_df(redcap_project)
+
     log.info("Sending emails to admin...")
     admin_html = create_admin_html(
-        failed_jobs_df, long_interval_df, software_mismatch_df
+        failed_jobs_df,
+        long_interval_df,
+        software_mismatch_df,
+        archived_fw_df,
+        archived_rc_df,
     )
     send_wbhi_email(
         new_matches_df,
@@ -551,14 +655,22 @@ def main():
             new_matches_df, just_rc_df, just_fw_df, site, test_run=config["test_run"]
         )
 
-    if not long_interval_df.empty:
-        update_tags(
-            long_interval_df, "long-redcap-interval_unsent", "long-redcap-interval"
-        )
-    if not software_mismatch_df.empty:
-        update_tags(
-            software_mismatch_df, "software-mismatch_unsent", "software-mismatch"
-        )
+    if not config["test_run"]:
+        if not long_interval_df.empty:
+            update_tags(
+                long_interval_df, "long-redcap-interval_unsent", "long-redcap-interval"
+            )
+        if not software_mismatch_df.empty:
+            update_tags(
+                software_mismatch_df, "software-mismatch_unsent", "software-mismatch"
+            )
+        if not archived_fw_df.empty:
+            update_tags(archived_fw_df, "archived", "archived_emailed")
+        if not archived_rc_df.empty:
+            archived_rc_emailed_list = [
+                {**r, "archived_emailed": "1"} for r in archived_rc_list
+            ]
+            redcap_project.import_records(archived_rc_emailed_list)
 
 
 if __name__ == "__main__":
