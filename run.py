@@ -227,7 +227,7 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     """Return a df containing unmatched redcap records."""
     # Since there's no way to reset a field to '', occassionally rid will be ' '
     # if it's value was deleted. Thus, we need to check for both cases.
-    filter_logic = "([rid] = '' or [rid]) = ' ' and [admin_archived] = '0'"
+    filter_logic = "([rid] = '' or [rid]) = ' ' and [admin_archived] != '1'"
     redcap_data = redcap_project.export_records(filter_logic=filter_logic)
 
     just_rc_list = []
