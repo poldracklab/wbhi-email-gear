@@ -292,9 +292,15 @@ def create_failed_jobs_df() -> pd.DataFrame():
         session = None
 
         if job.parents.subject:
-            subject = client.get_subject(job.parents.subject).label
+            try:
+                subject = client.get_subject(job.parents.subject).label
+            except flywheel.rest.ApiException:
+                pass
         if job.parents.session:
-            session = client.get_session(job.parents.session).label
+            try:
+                session = client.get_session(job.parents.session).label
+            except flywheel.rest.ApiException:
+                pass
 
         job_dict = {
             "name": job.gear_info.name,
