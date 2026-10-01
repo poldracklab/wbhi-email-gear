@@ -11,8 +11,10 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from datetime import datetime, date, timedelta
 import pandas as pd
+import requests
 from redcap import Project
 from flywheel import FileListOutput, ProjectOutput
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
 
 pip.main(["install", "--upgrade", "git+https://github.com/poldracklab/wbhi-utils.git"])
@@ -99,6 +101,18 @@ def get_acq_or_file_path(container) -> str:
     elif container.container_type == "file":
         acq_label = client.get_acquisition(container.parents.acquisition).label
         return f"{project_label}/{sub_label}/{ses_label}/{acq_label}/{container.name}/"
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_exception_type(
+        (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+    ),
+)
+def export_records_wrapper(redcap_project: Project, filter_logic=None) -> list[dict]:
+    """Wrapper for redcap.export_records() that retries using tenacity."""
+    return redcap_project.export_records(filter_logic=filter_logic)
 
 
 def get_last_job_date() -> str:
@@ -228,7 +242,7 @@ def create_just_rc_df(redcap_project: Project) -> pd.DataFrame:
     # Since there's no way to reset a field to '', occassionally rid will be ' '
     # if it's value was deleted. Thus, we need to check for both cases.
     filter_logic = "([rid] = '' or [rid] = ' ') and [admin_archived] != '1'"
-    redcap_data = redcap_project.export_records(filter_logic=filter_logic)
+    redcap_data = export_records_wrapper(redcap_project, filter_logic=filter_logic)
 
     just_rc_list = []
     for record in redcap_data:
@@ -398,7 +412,7 @@ def create_archived_fw_df() -> pd.DataFrame():
 def create_archived_rc_df(redcap_project) -> pd.DataFrame():
     """Return a df of all redcap records that have been archivee since the last email."""
     filter_logic = "[admin_archived] = '1' and [archived_emailed] != '1'"
-    archived_rc_list = redcap_project.export_records(filter_logic=filter_logic)
+    archived_rc_list = export_records_wrapper(redcap_project, filter_logic=filter_logic)
 
     record_list = []
     for record in archived_rc_list:
