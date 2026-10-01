@@ -2,4 +2,5 @@ flywheel-sdk
 flywheel_gear_toolkit
 pycap
 pandas
+tenacity
 git+https://github.com/poldracklab/wbhi-utils.git
