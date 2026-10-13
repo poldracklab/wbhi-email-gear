@@ -619,7 +619,7 @@ def send_wbhi_email(
         html_content,
         config["gmail_address"],
         recipients,
-        config["gmail_password"],
+        os.environ["GMAIL_PASSWORD"],
         [os.path.join(csv_path, basename) for basename in csv_list],
     )
 
@@ -637,7 +637,7 @@ def main():
     gtk_context.init_logging()
     gtk_context.log_config()
 
-    redcap_api_key = config["redcap_api_key"]
+    redcap_api_key = os.environ["REDCAP_API_KEY"]
     redcap_project = Project(REDCAP_API_URL, redcap_api_key)
     pre_deid_project = client.lookup("wbhi/pre-deid")
 
